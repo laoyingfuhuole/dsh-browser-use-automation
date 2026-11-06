@@ -1,0 +1,58 @@
+{
+  "name": "dsh-browser-use",
+  "version": "0.2.0",
+  "description": "Background browser automation for DeepSeek Harness: an offscreen Electron window driven over CDP, with snapshot refs and no focus stealing.",
+  "type": "module",
+  "main": "index.js",
+  "exports": {
+    ".": "./index.js",
+    "./host/main.cjs": "./host/main.cjs",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "index.js",
+    "src",
+    "host",
+    "cordis.patch.yml",
+    "README.md",
+    "LICENSE",
+    "docs"
+  ],
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  },
+  "scripts": {
+    "test": "node --test tests/*.test.mjs",
+    "test:host": "node --test tests/host.test.mjs"
+  },
+  "keywords": [
+    "dsh-plugin",
+    "deepseek-harness",
+    "browser",
+    "cdp",
+    "electron",
+    "automation"
+  ],
+  "license": "MIT",
+  "engines": {
+    "node": ">=22.19",
+    "dsh": ">=0.1.1-rc.2 <0.3.0"
+  },
+  "dependencies": {
+    "electron": "^44.10.0"
+  },
+  "peerDependencies": {
+    "@deepseek-ai/dsh-system-prompt": ">=0.1.1-rc.2 <0.3.0",
+    "@deepseek-ai/dsh-tools": ">=0.1.1-rc.2 <0.3.0"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/laoyingfuhuole/dsh-browser-use.git"
+  },
+  "homepage": "https://github.com/laoyingfuhuole/dsh-browser-use#readme",
+  "bugs": {
+    "url": "https://github.com/laoyingfuhuole/dsh-browser-use/issues"
+  }
+}

@@ -1,0 +1,13 @@
+# dsh-browser-use bundle
+#
+# One host plugin row. The plugin spawns an offscreen Electron browser on the
+# first tool call and registers the browser_use_* tools. No client half, no
+# settings panel, no shared browser service: this package is deliberately
+# small and independent from any other browser plugin.
+- insert:
+    - id: dsh-browser-use
+      name: dsh-browser-use
+      config:
+        # Keep the browser window offscreen and non-activating. Leave this on
+        # unless you are debugging the host with a visible window.
+        quiet: true
