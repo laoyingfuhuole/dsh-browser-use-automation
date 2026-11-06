@@ -13,7 +13,7 @@ test('plugin registers an independent tool surface', () => {
     logger: { warn: () => {} },
   }
   apply(ctx, { quiet: true })
-  assert.equal(tools.length, 12)
+  assert.equal(tools.length, 13)
   assert.equal(new Set(tools.map(tool => tool.name)).size, tools.length)
   assert.ok(tools.every(tool => tool.name.startsWith('browser_use_')))
   assert.equal(tools.some(tool => tool.name.startsWith('dsh_browser_')), false)

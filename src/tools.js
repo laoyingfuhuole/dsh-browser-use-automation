@@ -6,7 +6,15 @@
 import { mkdirSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
-import { defineTool } from '@deepseek-ai/dsh-tools'
+let defineTool
+try {
+  ({ defineTool } = await import('@deepseek-ai/dsh-tools'))
+} catch (error) {
+  // The peer is provided by DSH. The test runner uses an identity shim so the
+  // package's own tests do not need a full DSH installation.
+  if (process.env.DSH_BROWSER_USE_TEST !== '1') throw error
+  defineTool = definition => definition
+}
 
 const ELEMENT_SCHEMA = {
   type: 'object',
@@ -149,6 +157,27 @@ export function registerTools(ctx, client, config = {}) {
     isConcurrencySafe: () => false,
     async execute(args, exec) {
       return client.call('type', { ref: args.ref, text: args.text }, exec.signal)
+    },
+  }))
+
+  register(defineTool({
+    name: 'browser_use_insert_text',
+    description: 'Insert text into the currently focused editable element with CDP Input.insertText, without needing a snapshot ref. Use it for rich-text editors and page bodies; focus the element first with browser_use_eval if it has no ref.',
+    parameters: {
+      text: { type: 'string', required: true, description: 'Text to insert at the current selection.' },
+    },
+    output: {
+      schema: {
+        type: 'object',
+        additionalProperties: false,
+        properties: { typed: { type: 'number', required: true } },
+      },
+      render: (_args, value) => [{ type: 'text', text: `Inserted ${value.typed} characters at the current selection.` }],
+    },
+    timeoutMs: 30_000,
+    isConcurrencySafe: () => false,
+    async execute(args, exec) {
+      return client.call('insertText', { text: args.text }, exec.signal)
     },
   }))
 

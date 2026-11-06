@@ -9,13 +9,14 @@
  * capture still work because the window keeps a display surface.
  */
 
-const { app, BrowserWindow, screen } = require('electron')
+const { app, BrowserWindow, Menu, screen } = require('electron')
 const { createServer } = require('node:net')
 
 const TOKEN = process.env.BROWSER_USE_TOKEN || ''
 const WIDTH = Number(process.env.BROWSER_USE_WIDTH || 1400) || 1400
 const HEIGHT = Number(process.env.BROWSER_USE_HEIGHT || 900) || 900
-const KEEP_DOCK = process.env.BROWSER_USE_KEEP_DOCK === '1'
+const FORCE_DOCK = process.env.BROWSER_USE_KEEP_DOCK === '1'
+const HIDE_DOCK = process.env.BROWSER_USE_HIDE_DOCK === '1' && FORCE_DOCK !== true
 
 let win = null
 let server = null
@@ -25,6 +26,7 @@ let authenticated = false
 let quitting = false
 let refs = new Map()
 let queue = Promise.resolve()
+let revealReady = false
 
 const delay = ms => new Promise(resolve => setTimeout(resolve, ms))
 
@@ -321,6 +323,9 @@ async function dispatch(message) {
       return click(message.ref)
     case 'type':
       return type(message.ref, String(message.text ?? ''))
+    case 'insertText':
+      await cdp('Input.insertText', { text: String(message.text ?? '') })
+      return { typed: String(message.text ?? '').length }
     case 'screenshot':
       return screenshot()
     case 'eval': {
@@ -335,6 +340,10 @@ async function dispatch(message) {
       return waitFor(message)
     case 'state':
       return pageState()
+    case 'windowShow':
+      return revealWindow()
+    case 'windowHide':
+      return hideToBackground()
     case 'windowState':
       return {
         bounds: win.getBounds(),
@@ -431,8 +440,39 @@ function park() {
   }
 }
 
+function revealWindow() {
+  if (win === null || win.isDestroyed()) return { shown: false, reason: 'no window' }
+  const area = screen.getPrimaryDisplay().workArea
+  const width = Math.min(WIDTH, Math.max(480, area.width - 40))
+  const height = Math.min(HEIGHT, Math.max(360, area.height - 40))
+  win.setSkipTaskbar(false)
+  win.setFocusable(true)
+  win.setOpacity(1)
+  win.setBounds({
+    x: area.x + Math.round((area.width - width) / 2),
+    y: area.y + Math.round((area.height - height) / 2),
+    width,
+    height,
+  })
+  win.show()
+  win.focus()
+  app.dock?.show()
+  app.focus({ steal: true })
+  return { shown: true, bounds: win.getBounds(), opacity: win.getOpacity(), visible: win.isVisible() }
+}
+
+function hideToBackground() {
+  if (win === null || win.isDestroyed()) return { hidden: false, reason: 'no window' }
+  win.setSkipTaskbar(true)
+  win.setFocusable(false)
+  win.setOpacity(0)
+  win.showInactive()
+  park()
+  return { hidden: true, bounds: win.getBounds(), opacity: win.getOpacity(), visible: win.isVisible() }
+}
+
 async function start() {
-  if (KEEP_DOCK !== true) app.dock?.hide()
+  if (HIDE_DOCK) app.dock?.hide()
   win = new BrowserWindow({
     width: WIDTH,
     height: HEIGHT,
@@ -447,7 +487,10 @@ async function start() {
     },
   })
   win.on('close', event => {
-    if (quitting !== true) event.preventDefault()
+    if (quitting !== true) {
+      event.preventDefault()
+      hideToBackground()
+    }
   })
   win.on('minimize', () => {
     // The host must keep a surface. Restore silently; opacity/offscreen keep it hidden.
@@ -472,6 +515,13 @@ async function start() {
   win.showInactive()
   win.setOpacity(0)
   park()
+  revealReady = true
+  if (process.platform === 'darwin' && app.dock) {
+    app.dock.setMenu(Menu.buildFromTemplate([
+      { label: '显示浏览器窗口', click: () => revealWindow() },
+      { label: '隐藏到后台', click: () => hideToBackground() },
+    ]))
+  }
   server = createServer(onConnection)
   server.on('error', error => {
     console.error(`[dsh-browser-use] rpc server error: ${error.message}`)
@@ -495,6 +545,9 @@ process.on('SIGINT', () => {
 app.whenReady().then(start).catch(error => {
   console.error(`[dsh-browser-use] host failed: ${error && error.stack ? error.stack : error}`)
   app.quit()
+})
+app.on('activate', () => {
+  if (revealReady) revealWindow()
 })
 app.on('window-all-closed', () => {
   // Keep the host alive until the parent disconnects or calls close.

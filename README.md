@@ -72,7 +72,7 @@ The child prints one ready line (`{ "port": ... }`) on stdout. The parent connec
 - `show: false` at creation.
 - `showInactive()`, then `setOpacity(0)`, then park outside the work area.
 - `setSkipTaskbar(true)`, `setFocusable(false)`, `setMinimizable(false)`.
-- `app.dock.hide()` on macOS (unless `BROWSER_USE_KEEP_DOCK=1`).
+- On macOS the Electron Dock icon is shown by default. Click it (or use its menu) to reveal the browser window; the window is never raised by a tool. Set `BROWSER_USE_HIDE_DOCK=1` to hide the Dock icon, or `BROWSER_USE_KEEP_DOCK=1` to force it on.
 - If the window is minimized by the OS, the host restores it silently, re-parks it, and keeps opacity 0.
 - No tool path calls `Page.bringToFront()`.
 
@@ -89,3 +89,11 @@ The child prints one ready line (`{ "port": ... }`) on stdout. The parent connec
 ## License
 
 MIT. See [LICENSE](./LICENSE).
+
+## Viewing the browser
+
+The host runs headless by default: the window is transparent, offscreen, unfocused, and never brought forward by a tool. To inspect the current page:
+
+- macOS: click the Electron Dock icon, or use its menu `显示浏览器窗口` / `隐藏到后台`.
+- The window appears at 1400x900 on the active display; close it to send it back to the background (the page stays alive).
+- `BROWSER_USE_HIDE_DOCK=1` hides the Dock icon; `BROWSER_USE_KEEP_DOCK=1` forces it visible.

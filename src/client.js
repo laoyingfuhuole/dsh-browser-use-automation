@@ -137,6 +137,11 @@ export class HostClient {
         resolve: value => settle(resolve, value),
         reject: error => settle(reject, error),
       })
+      if (this.socket === null) {
+        this.starting = null
+        settle(reject, new Error('browser host connection closed before the command was sent'))
+        return
+      }
       this.socket.write(`${JSON.stringify(message)}\n`)
     })
   }
@@ -176,6 +181,10 @@ export class HostClient {
       this.pending.clear()
       this.socket?.destroy()
       this.socket = null
+      this.child = null
+      // A resolved startup promise must not be reused after the child dies;
+      // otherwise the next call writes to a null socket and never respawns.
+      this.starting = null
     })
 
     const port = await new Promise((resolve, reject) => {
