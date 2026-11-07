@@ -607,6 +607,10 @@ app.on('did-resign-active', () => {
     if (win.isVisible() && win.getOpacity() > 0 && !appActive()) hideToBackground()
   }, 80)
 })
+app.on('before-quit', () => {
+  // Cmd+Q and the Dock's Quit item must win over the close-to-hide handler.
+  quitting = true
+})
 app.on('window-all-closed', () => {
   // Keep the host alive until the parent disconnects or calls close.
 })
