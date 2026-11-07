@@ -316,7 +316,7 @@ async function pageState() {
 async function dispatch(message) {
   // A window the user revealed must not stay on screen after they switch away.
   // Tools never present the window; restore the background contract first.
-  if (win !== null && !win.isDestroyed() && win.isVisible() && win.getOpacity() > 0 && !app.isActive()) {
+  if (win !== null && !win.isDestroyed() && win.isVisible() && win.getOpacity() > 0 && !appActive()) {
     hideToBackground()
   }
   switch (message.op) {
@@ -445,6 +445,15 @@ function park() {
   }
 }
 
+function appActive() {
+  try {
+    if (typeof app.isActive === 'function') return app.isActive()
+  } catch {
+    // Fall through to the window-focus fallback.
+  }
+  return win !== null && !win.isDestroyed() && win.isFocused()
+}
+
 function revealWindow() {
   if (win === null || win.isDestroyed()) return { shown: false, reason: 'no window' }
   const area = screen.getPrimaryDisplay().workArea
@@ -452,6 +461,7 @@ function revealWindow() {
   const height = Math.min(HEIGHT, Math.max(360, area.height - 40))
   win.setSkipTaskbar(false)
   win.setFocusable(true)
+  try { win.setIgnoreMouseEvents(false) } catch {}
   win.setOpacity(1)
   win.setBounds({
     x: area.x + Math.round((area.width - width) / 2),
@@ -470,6 +480,7 @@ function hideToBackground() {
   if (win === null || win.isDestroyed()) return { hidden: false, reason: 'no window' }
   win.setSkipTaskbar(true)
   win.setFocusable(false)
+  try { win.setIgnoreMouseEvents(true, { forward: true }) } catch {}
   win.setOpacity(0)
   win.showInactive()
   park()
@@ -502,6 +513,8 @@ async function start() {
     setTimeout(() => {
       if (win === null || win.isDestroyed()) return
       win.restore()
+      win.setFocusable(false)
+      try { win.setIgnoreMouseEvents(true, { forward: true }) } catch {}
       win.setOpacity(0)
       win.showInactive()
       park()
@@ -512,7 +525,7 @@ async function start() {
     // A click inside this page does not blur it, so watching the run still works.
     setTimeout(() => {
       if (win === null || win.isDestroyed()) return
-      if (app.isActive() && win.isFocused()) return
+      if (appActive() && win.isFocused()) return
       hideToBackground()
     }, 120)
   })
@@ -521,6 +534,7 @@ async function start() {
   await cdp('Page.enable')
   win.setSkipTaskbar(true)
   win.setFocusable(false)
+  try { win.setIgnoreMouseEvents(true, { forward: true }) } catch {}
   try {
     win.setMinimizable(false)
   } catch {
@@ -534,7 +548,7 @@ async function start() {
   // shown inactive and never became key). Keep the "shown" state self-cleaning.
   const watch = setInterval(() => {
     if (win === null || win.isDestroyed()) return
-    if (win.isVisible() && win.getOpacity() > 0 && !app.isActive()) hideToBackground()
+    if (win.isVisible() && win.getOpacity() > 0 && !appActive()) hideToBackground()
   }, 700)
   watch.unref?.()
   if (process.platform === 'darwin' && app.dock) {
@@ -574,7 +588,7 @@ app.on('did-resign-active', () => {
   // macOS: the whole app lost focus; a visible window must not stay on top.
   setTimeout(() => {
     if (win === null || win.isDestroyed()) return
-    if (win.isVisible() && win.getOpacity() > 0 && !app.isActive()) hideToBackground()
+    if (win.isVisible() && win.getOpacity() > 0 && !appActive()) hideToBackground()
   }, 80)
 })
 app.on('window-all-closed', () => {
