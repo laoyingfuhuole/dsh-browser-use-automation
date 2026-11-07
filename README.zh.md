@@ -54,7 +54,7 @@ npm test        # 单元 + host 端到端（需要 Electron）
 npm test
 ```
 
-五项测试覆盖 host、注册的工具面、bundle 元数据，以及端到端的 `open → type → click → assert → screenshot` 路径。手动百度 smoke（`dsh官网`，11 个结果标题）记录在 [`docs/testing.md`](docs/testing.md)。
+五项测试覆盖 host、注册的工具面、bundle 元数据，以及端到端的 `open → type → click → assert → screenshot` 路径。手动百度 smoke（`dsh官网`，11 个结果标题）记录在 [`docs/testing.zh.md`](docs/testing.zh.md)（[English](docs/testing.md)）。
 
 ## 架构
 
