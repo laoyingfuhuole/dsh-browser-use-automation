@@ -502,6 +502,22 @@ async function start() {
       backgroundThrottling: false,
     },
   })
+  // A page must never be able to open a second native window: keep it in this
+  // single background surface. target=_blank links load in the current tab.
+  win.webContents.setWindowOpenHandler(({ url }) => {
+    if (/^https?:/i.test(url)) {
+      win.loadURL(url).catch(() => {})
+    }
+    return { action: 'deny' }
+  })
+  win.webContents.on('did-create-window', child => {
+    try { child.close() } catch {}
+  })
+  for (const other of BrowserWindow.getAllWindows()) {
+    if (other !== win) {
+      try { other.close() } catch {}
+    }
+  }
   win.on('close', event => {
     if (quitting !== true) {
       event.preventDefault()
