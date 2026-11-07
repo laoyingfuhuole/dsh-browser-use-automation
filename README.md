@@ -84,6 +84,8 @@ The child prints one ready line (`{ "port": ... }`) on stdout. The parent connec
 - Typing is character-by-character through `Input.insertText`; it is visible but deliberately modest (about 18 ms per character).
 - The cursor is injected into the top document; it is not drawn inside cross-origin iframes.
 - The host is macOS-first; Windows/Linux are untested.
+- On multi-display setups the clamped offscreen window can appear as a blank tile in Mission Control; it stays transparent and click-through, but there is no native z-order (orderBack) yet.
+- Screen sharing/capture sees no page until the window is revealed, because the background window is opacity 0.
 - No client settings panel. The bundle row is the only switch.
 
 ## License
