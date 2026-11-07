@@ -1,6 +1,6 @@
 # Installing as a DSH bundle
 
-English | [简体中文](install.zh.md)
+English | [简体中文](install-zh.md)
 
 The plugin has no client half and does not need `dsh-builtin-browser`. It adds one bundle row (`dsh-browser-use`) with a quiet offscreen Electron host.
 

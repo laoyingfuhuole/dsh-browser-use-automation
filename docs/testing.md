@@ -1,6 +1,6 @@
 # Testing
 
-English | [简体中文](testing.zh.md)
+English | [简体中文](testing-zh.md)
 
 ```bash
 npm test

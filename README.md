@@ -1,6 +1,6 @@
 # dsh-browser-use
 
-English | [简体中文](README.zh.md)
+English | [简体中文](README-zh.md)
 
 Background browser automation for [DeepSeek Harness](https://github.com/deepseek-ai). A clean rewrite: one offscreen Electron window, CDP input, numbered snapshot refs, and no focus stealing.
 
@@ -54,7 +54,7 @@ Requirements: Node >= 22.19, DSH >= 0.1.1-rc.2 < 0.3.0, Electron 44+.
 npm test
 ```
 
-Five tests cover the host, the registered tool surface, the bundle metadata, and an end-to-end `open → type → click → assert → screenshot` path. A manual Baidu smoke test (`dsh官网`, 11 result headings) is documented in [`docs/testing.md`](docs/testing.md) ([中文](docs/testing.zh.md)).
+Five tests cover the host, the registered tool surface, the bundle metadata, and an end-to-end `open → type → click → assert → screenshot` path. A manual Baidu smoke test (`dsh官网`, 11 result headings) is documented in [`docs/testing.md`](docs/testing.md) ([中文](docs/testing-zh.md)).
 
 ## Architecture
 
