@@ -1,8 +1,8 @@
 # 作为 DSH bundle 安装
 
-插件没有客户端半边，也不依赖 `dsh-builtin-browser`。它只添加一个 bundle 行（`dsh-browser-use`），配一个安静、离屏的 Electron host。
-
 [English](install.md) | 简体中文
+
+插件没有客户端半边，也不依赖 `dsh-builtin-browser`。它只添加一个 bundle 行（`dsh-browser-use`），配一个安静、离屏的 Electron host。
 
 ## 从 checkout 安装
 

@@ -1,5 +1,7 @@
 # 测试
 
+[English](testing.md) | 简体中文
+
 ```bash
 npm test
 ```
@@ -12,8 +14,6 @@ npm test
 | `tests/tools-e2e.test.mjs` | 走已注册的 `browser_use_*` 工具执行同一路径，包括一次断言和一张保存的 JPEG。 |
 | `tests/plugin.test.mjs` | 插件注册 12 个独立的 `browser_use_*` 工具，且没有 `dsh_browser_*` 名称。 |
 | `tests/package.test.mjs` | 包是 DSH bundle，且只有一行 patch。 |
-
-[English](testing.md) | 简体中文
 
 ## 手动百度 smoke
 

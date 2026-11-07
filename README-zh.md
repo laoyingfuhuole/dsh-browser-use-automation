@@ -1,10 +1,10 @@
 # dsh-browser-use
 
+[English](README.md) | 简体中文
+
 面向 [DeepSeek Harness](https://github.com/deepseek-ai) 的后台浏览器自动化插件。干净重写：一个离屏 Electron 窗口、CDP 输入、编号快照 ref、不抢焦点。
 
 这不是另一个浏览器插件的 fork。它与 `dsh-builtin-browser` 不共享包 id、工具名、客户端模块、设置路由或浏览器窗口。
-
-[English](README.md) | 简体中文
 
 ## 功能
 
