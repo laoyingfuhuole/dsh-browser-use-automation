@@ -1,5 +1,7 @@
 # dsh-browser-use
 
+English | [简体中文](README.zh.md)
+
 Background browser automation for [DeepSeek Harness](https://github.com/deepseek-ai). A clean rewrite: one offscreen Electron window, CDP input, numbered snapshot refs, and no focus stealing.
 
 This is not a fork of another browser plugin. It shares no package id, tool name, client module, settings route, or browser window with `dsh-builtin-browser`.
