@@ -96,4 +96,5 @@ The host runs headless by default: the window is transparent, offscreen, unfocus
 
 - macOS: click the Electron Dock icon, or use its menu `显示浏览器窗口` / `隐藏到后台`.
 - The window appears at 1400x900 on the active display; close it to send it back to the background (the page stays alive).
+- Shown only while you are using it: switching to another app (including DSH) automatically returns the window to the transparent offscreen state, and the next tool call stays background-only. Click the Dock icon again to re-open it.
 - `BROWSER_USE_HIDE_DOCK=1` hides the Dock icon; `BROWSER_USE_KEEP_DOCK=1` forces it visible.

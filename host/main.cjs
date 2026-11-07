@@ -314,6 +314,11 @@ async function pageState() {
 }
 
 async function dispatch(message) {
+  // A window the user revealed must not stay on screen after they switch away.
+  // Tools never present the window; restore the background contract first.
+  if (win !== null && !win.isDestroyed() && win.isVisible() && win.getOpacity() > 0 && !app.isActive()) {
+    hideToBackground()
+  }
   switch (message.op) {
     case 'navigate':
       return navigate(message.url)
@@ -502,6 +507,15 @@ async function start() {
       park()
     }, 50)
   })
+  win.on('blur', () => {
+    // The user switched away (another app or the DSH chat): return to offscreen.
+    // A click inside this page does not blur it, so watching the run still works.
+    setTimeout(() => {
+      if (win === null || win.isDestroyed()) return
+      if (app.isActive() && win.isFocused()) return
+      hideToBackground()
+    }, 120)
+  })
   await win.loadURL('about:blank')
   win.webContents.debugger.attach('1.3')
   await cdp('Page.enable')
@@ -516,6 +530,13 @@ async function start() {
   win.setOpacity(0)
   park()
   revealReady = true
+  // Fallback for focus transitions that do not emit blur (e.g. the window was
+  // shown inactive and never became key). Keep the "shown" state self-cleaning.
+  const watch = setInterval(() => {
+    if (win === null || win.isDestroyed()) return
+    if (win.isVisible() && win.getOpacity() > 0 && !app.isActive()) hideToBackground()
+  }, 700)
+  watch.unref?.()
   if (process.platform === 'darwin' && app.dock) {
     app.dock.setMenu(Menu.buildFromTemplate([
       { label: '显示浏览器窗口', click: () => revealWindow() },
@@ -548,6 +569,13 @@ app.whenReady().then(start).catch(error => {
 })
 app.on('activate', () => {
   if (revealReady) revealWindow()
+})
+app.on('did-resign-active', () => {
+  // macOS: the whole app lost focus; a visible window must not stay on top.
+  setTimeout(() => {
+    if (win === null || win.isDestroyed()) return
+    if (win.isVisible() && win.getOpacity() > 0 && !app.isActive()) hideToBackground()
+  }, 80)
 })
 app.on('window-all-closed', () => {
   // Keep the host alive until the parent disconnects or calls close.
