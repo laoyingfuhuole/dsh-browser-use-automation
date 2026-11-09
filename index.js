@@ -13,7 +13,7 @@ import { HostClient } from './src/client.js'
 import { registerTools } from './src/tools.js'
 import { verifyInstallation } from './src/integrity.js'
 
-export const name = 'dsh-browser-use'
+export const name = 'dsh-parallel-browser'
 // 告诉 DSH 本插件依赖哪两个服务；ctx 由框架提供，不是浏览器里的页面对象。
 export const inject = ['tools', 'systemPrompt']
 

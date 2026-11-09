@@ -4,13 +4,15 @@
 
 ## 当前版本
 
+`v0.3.3`：修复包名迁移后 bundle patch 仍指向旧模块名（`dsh-browser-use`）导致宿主启动时无法加载的问题；插件行 id 与插件名统一为 `dsh-parallel-browser`，不再与包名分叉。
+
 `v0.3.2`：包名迁移到 npm **`dsh-parallel-browser`**（原 `dsh-browser-use`），安装与更新改走市场 / npm 路线；功能与 `v0.3.1` 一致。
 
 `v0.3.1`：修复 Windows 启动前导 CRLF 导致的握手失败，增加只读 Electron 就绪诊断；Windows 点 X 关闭当前对话窗口，最后一个原生窗口关闭后刷新共享存储并退出 host。macOS 保持 X 隐藏、Cmd+Q 退出整个浏览器 host。项目仅保留本篇中文 README。
 
 保留 `v0.3.0` 的按对话独立窗口、共享登录数据、请求取消、显式恢复、过期 ref 与导航失败校验。多轮对话默认保留页面；`browser_use_reset` 必须经过明确确认。
 
-macOS 真实 Electron 回归已覆盖主要路径；Windows 新修复已通过平台模拟测试，仍需用匹配版本、无 shim 的 Electron 在 Windows 实机复验。真实 DSH UI 双对话验收仍待完成。对外使用 `vX.Y.Z` 标签，package.json 使用标准数字版本 `0.3.2`。
+macOS 真实 Electron 回归已覆盖主要路径；Windows 新修复已通过平台模拟测试，仍需用匹配版本、无 shim 的 Electron 在 Windows 实机复验。真实 DSH UI 双对话验收仍待完成。对外使用 `vX.Y.Z` 标签，package.json 使用标准数字版本 `0.3.3`。
 
 ## 功能
 

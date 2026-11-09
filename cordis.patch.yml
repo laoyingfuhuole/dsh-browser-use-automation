@@ -1,4 +1,4 @@
 # Start the background browser lazily on the first tool call.
 - insert:
-    - id: dsh-browser-use
-      name: dsh-browser-use
+    - id: dsh-parallel-browser
+      name: dsh-parallel-browser
