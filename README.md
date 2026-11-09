@@ -1,64 +1,62 @@
 # dsh-browser-use
 
-English | [简体中文](README-zh.md)
+面向 [DeepSeek Harness](https://github.com/deepseek-ai) 的后台浏览器自动化插件。一个 Electron host 为不同对话分配独立编号的离屏窗口，使用 CDP 输入和快照 ref，不抢焦点；各窗口共享登录状态与持久化站点数据。
 
-Background browser automation for [DeepSeek Harness](https://github.com/deepseek-ai). One Electron host assigns independently numbered offscreen windows to conversations, with CDP input, snapshot refs and no focus stealing. Windows share login state and persistent site data.
+这不是另一个浏览器插件的 fork。它与 `dsh-builtin-browser` 不共享包 id、工具名、客户端模块、设置路由或浏览器窗口。
 
-This is not a fork of another browser plugin. It shares no package id, tool name, client module, settings route, or browser window with `dsh-builtin-browser`.
+## 当前版本
 
-## Current version
+`v0.3.0`：新增按对话独立窗口、共享登录数据、请求取消、显式恢复，以及过期 ref 和导航失败校验。`browser_use_close` 只关闭本对话窗口；`browser_use_reset` 必须经过明确确认。多轮对话默认保留页面。
 
-`v0.3.0` includes conversation-scoped windows, shared login data, request cancellation, explicit recovery, stale-ref protection and navigation failure handling. `browser_use_close` closes only this conversation's window; `browser_use_reset` requires explicit confirmation. Multi-turn conversations retain their pages by default.
+macOS 真实 Electron 回归已覆盖主要路径；Windows 任务栏预览和真实 DSH UI 双对话仍需实机验收。对外版本使用 `v0.3.0`、`v0.3.1` 依次迭代；package.json 使用标准数字版本 `0.3.0`。更改版本号不等于已经提交、打标签或发布。
 
-Real Electron regressions cover the main macOS paths. Windows taskbar previews and two live DSH UI conversations still require hardware/integration acceptance. Public versions use `v0.3.0`, `v0.3.1`, and so on; package.json uses the standard numeric `0.3.0`. Updating metadata does not create a commit, tag or release.
+## 功能
 
-## What it does
+- 首次工具调用时才惰性启动真实 Electron/Chromium 窗口。
+- 窗口默认离屏停放；普通页面工具不主动激活窗口。Windows 保留任务栏预览，macOS 使用 Dock 编号菜单。
+- 通过 Chrome DevTools Protocol 驱动页面：真实鼠标事件、`Input.insertText`、`Page.captureScreenshot`、`Runtime.evaluate`。
+- 在页面内绘制光标（箭头 + 动作气泡、点击涟漪），逐字符输入，动作可见但不依赖系统指针。
+- `browser_use_snapshot` 返回编号元素 ref；ref 只在当次快照内有效。
+- DSH 界面在后台时仍可工作；不移除 display surface，因此 CDP 输入不会被丢弃。
 
-- Starts a real Electron/Chromium window lazily on the first tool call.
-- Parks windows offscreen by default; ordinary page tools do not activate them. Windows keeps taskbar previews, while macOS provides numbered Dock menu entries.
-- Drives the page over the Chrome DevTools Protocol: real mouse events, `Input.insertText`, `Page.captureScreenshot`, `Runtime.evaluate`.
-- Draws a page-local cursor (arrow + action bubble, click ripple) and inserts text one character at a time, so actions are visible without depending on the OS pointer.
-- Gives the model numbered element refs from `browser_use_snapshot`; refs are valid for that snapshot only.
-- Works while the DSH UI is in the background; no display surface is removed, so CDP input is not dropped.
+## 工具
 
-## Tools
-
-| Tool | Purpose |
+| 工具 | 用途 |
 | --- | --- |
-| `browser_use_open` | Open an http(s) URL and return a snapshot |
-| `browser_use_snapshot` | Numbered interactive elements |
-| `browser_use_click` | Real mouse click by snapshot ref |
-| `browser_use_type` | Focus an element, draw the cursor, insert text character by character |
-| `browser_use_insert_text` | Insert text at the current selection without a snapshot ref |
-| `browser_use_screenshot` | Save a JPEG and return its path |
-| `browser_use_eval` | Evaluate page JavaScript |
-| `browser_use_wait` | Wait for load / selector / text / URL |
-| `browser_use_assert` | Check selector, text, URL, or JS truthiness |
-| `browser_use_state` | URL, title, readyState, first visible text |
-| `browser_use_back` / `browser_use_reload` | History / reload |
-| `browser_use_close` | Close this conversation's window without affecting others |
-| `browser_use_reset` | User-confirmed urgent recovery of this window; shared login storage remains |
+| `browser_use_open` | 打开 http(s) URL 并返回快照 |
+| `browser_use_snapshot` | 返回编号的可交互元素 |
+| `browser_use_click` | 按快照 ref 执行真实鼠标点击 |
+| `browser_use_type` | 聚焦元素、绘制光标、逐字符输入 |
+| `browser_use_insert_text` | 在当前选区插入文本，无需快照 ref |
+| `browser_use_screenshot` | 保存 JPEG 并返回路径 |
+| `browser_use_eval` | 执行页面 JavaScript |
+| `browser_use_wait` | 等待加载 / 选择器 / 文本 / URL |
+| `browser_use_assert` | 校验选择器、文本、URL 或 JS 真值 |
+| `browser_use_state` | URL、标题、readyState、首段可见文本 |
+| `browser_use_back` / `browser_use_reload` | 后退 / 刷新 |
+| `browser_use_close` | 关闭当前对话窗口，不影响其他对话 |
+| `browser_use_reset` | 经用户确认后，立即重置当前卡住的窗口；共享登录数据保留 |
 
-`browser_use_assert` requires at least one non-blank string condition. Empty or whitespace-only conditions alone raise an argument error rather than passing; multiple valid conditions are combined with AND. Registration failures report the tool name and stop registration instead of silently leaving an incomplete tool set. After `browser_use_close` returns, the next call creates a new window for this conversation in the same host, retaining shared login data.
+`browser_use_assert` 至少需要一个非空字符串条件；仅传空参数或空白内容会报参数错误，不再视为通过。多个有效条件按 AND 判断。工具注册失败会带工具名报错，不继续悄悄加载不完整的工具集合。`browser_use_close` 返回后，下次调用会在同一 host 中新建此对话的窗口，保留共享登录数据。
 
-### Conversations and windows
+### 对话与窗口
 
-- Tools use the trusted DSH execution identity `exec.agent.id`: one window per conversation, reused on later calls. Model arguments cannot select windows. Missing identity is an explicit error.
-- Window numbers appear in titles and Dock menus and increase within a host lifetime. Routing uses conversation IDs, not window numbers or snapshot refs.
-- Each window owns its page, snapshot refs, CDP connection and operation queue. Calls are serial within a window and can run in parallel across windows.
-- All windows use `session.defaultSession`, preserving the previous default data directory. Same-origin cookies, localStorage and IndexedDB are shared; pages, back/forward navigation and sessionStorage remain separate. Logging out or switching accounts affects other windows.
-- Shared data belongs to this plugin, not the system Chrome profile, accounts or bookmarks. Do not launch multiple hosts writing to the same profile directory.
-- Windows, pages and unsaved input persist across turns by default; no end-of-turn or idle eviction. Use `browser_use_close` or `browser_use_reset` only after an explicit user request. Plugin disposal, disconnect or app exit ends the shared host.
+- 工具从 DSH 执行上下文的 `exec.agent.id` 获取对话标识；同一对话复用窗口，不同对话使用不同窗口。模型无需、也不能通过参数选择窗口。缺失标识时明确报错。
+- 编号只用于标题和 Dock 菜单，在本次 host 生命周期中递增；内部始终按对话 ID 路由，不能将编号或快照 ref 当作跨对话标识。
+- 每个窗口独立持有页面、快照 ref、CDP 会话和操作队列。同窗口顺序执行，不同窗口可并行。
+- 所有窗口使用同一个 `session.defaultSession`，保留之前的默认数据目录。同源 Cookie、localStorage、IndexedDB 等共享；页面、后退/前进历史和 sessionStorage 各自独立。退出登录或切换账号会影响其他窗口。
+- 共享的是插件的浏览器数据，不是系统 Chrome 的账户、书签或资料。不要启动多个 host 进程同时写同一个数据目录。
+- 默认跨轮次保留窗口、页面和未提交内容，不因一轮回复结束或空闲而回收。仅用户明确要求关闭/恢复时调用 `browser_use_close` 或 `browser_use_reset`；插件卸载、断连或应用退出才结束共享 host。
 
-## Install
+## 安装
 
-Requirements: Node >= 22.19, DSH >= 0.1.1-rc.2 < 0.3.0, Electron 44+. From the checkout:
+要求：Node >= 22.19，DSH >= 0.1.1-rc.2 < 0.3.0，Electron 44+。在项目目录运行：
 
 ```bash
 npm install
 ```
 
-Add the checkout to a DSH profile's dependencies and bundles:
+将项目加入 DSH profile 的依赖和 bundles：
 
 ```jsonc
 // ~/.dsh/profiles/<profile>/package.json
@@ -74,31 +72,31 @@ Add the checkout to a DSH profile's dependencies and bundles:
 }
 ```
 
-Reinstall the profile dependencies, restart DSH, and confirm that the `browser_use_*` tools appear. The [bundle patch](cordis.patch.yml) adds one plugin row; the browser starts only on the first tool call. It does not require `dsh-builtin-browser` and can coexist with it.
+重新安装 profile 依赖、重启 DSH，确认 `browser_use_*` 工具出现。[Bundle patch](cordis.patch.yml) 只添加一个插件行；浏览器在首次工具调用时启动。不依赖 `dsh-builtin-browser`，也可以与它共存。
 
-Electron lookup order: `ELECTRON_PATH` → this package's dependency → `$DSH_HOME/profiles/*/node_modules/electron/dist` (`DSH_HOME` defaults to `~/.dsh`). Lookup does not download a binary; if none exists, install one:
+Electron 查找顺序：`ELECTRON_PATH` → 本包依赖 → `$DSH_HOME/profiles/*/node_modules/electron/dist`（`DSH_HOME` 默认为 `~/.dsh`）。查找不会触发下载；缺少二进制时可安装：
 
 ```bash
 npm install electron@^44.10.0
 ```
 
-Optional plugin configuration: `width` (default 1400), `height` (900), and `screenshotDir` (default `$DSH_HOME/browser-use/screenshots`). The legacy `quiet` option is ignored; background operation is always the default. Set `BROWSER_USE_USER_DATA_DIR` to an absolute path before startup only when a separate profile is needed. Without it, the previous data location is retained; selecting a new path does not migrate existing login data.
+可选插件配置：`width`（默认 1400）、`height`（900）、`screenshotDir`（默认 `$DSH_HOME/browser-use/screenshots`）。旧版 `quiet` 配置会被忽略；始终默认在后台运行。仅需独立数据目录时，启动前设置 `BROWSER_USE_USER_DATA_DIR` 为绝对路径；不设置则沿用旧目录，设置新路径不会自动搬迁旧登录数据。
 
-### Updating through the dshmarket GUI
+### 通过 dshmarket 图形界面更新
 
-Several catalog entries may share this package name. Select the source **`laoyingfuhuole/dsh-browser-use`**, not another repository or an unrelated same-named npm package. This project's current catalog entry is GitHub-sourced with no npm identity.
+市场目录可能有多个同名插件；必须核对来源是 **`laoyingfuhuole/dsh-browser-use`**，不要按名称选择其他仓库或同名 npm 包。本项目当前市场条目是 GitHub 来源，不声明 npm 包。
 
-- After installation from the correct repository entry, dshmarket's Update button checks remote versions, selects the source commit, installs the complete package and manages reloads. No extra plugin command is required. This plugin does not download updates, edit the profile or force a restart.
-- Development `file:` / `link:` installs are not online market sources. Local edits or version bumps do not create remote updates. To use the market workflow, finish active work and use its restore/source-switch action to select the correct GitHub entry. If unavailable, follow the market's removal/reinstall flow; never fall back to the unrelated same-named npm package.
-- Follow the market's actual application result: `applied` and `restart-required` are different outcomes. A completed download or matching disk version is not proof that running modules were reloaded. Updating may unload the plugin and close browser windows; finish work or explicitly accept page-state loss first.
-- [integrity.json](integrity.json) is included in the repository and package. Plugin activation and host startup automatically verify release-file SHA-256 hashes. Missing files, mismatched versions or an old host mixed with new clients fail explicitly, requiring a complete market reinstall and reload. Existing windows are not automatically closed and market-owned files are not rewritten by this check.
-- No installation lifecycle hooks such as `prepare` or `postinstall`, and no developer checkout, are required for this verification. This detects mixed files, not author authenticity; it supplements rather than replaces the market's source and supply-chain checks.
+- 从正确仓库条目安装后，由 dshmarket 的“更新”按钮检查远端版本、选择提交、执行完整安装并管理插件重载。无需额外运行本项目命令行脚本，插件也不自行下载安装、修改 profile 或强制重启。
+- `file:` / `link:` 开发目录与市场在线来源不同，改源码或本地版本号不能让远端出现更新。想使用市场更新，应在确认停止当前任务后，通过市场切换/恢复到正确 GitHub 条目；恢复不可用时按市场提示移除开发安装并重新安装，不能回退到同名 npm 包。
+- 更新状态以市场结果为准：`applied` 表示已应用，`restart-required` 等状态需按桌面程序提示处理；不要将下载完成或文件版本一致视为进程已经重载。更新卸载可能关闭正在运行的浏览器窗口，应先结束或确认放弃当前页面现场，不能无感更新活跃对话。
+- 清单文件 [integrity.json](integrity.json) 随仓库与发布包分发。插件加载以及启动新 host 前自动检查发布文件的 SHA-256；缺文件、版本不符、旧 host 混装会明确拒绝运行，要求通过市场完整重装并重载。不会自动关闭现有窗口或覆盖市场正在安装的文件。
+- 无需 `prepare` / `postinstall` 等安装脚本，也不依赖本机源码目录；因此市场安装时禁用额外构建脚本仍可校验本插件。完整性校验用于发现混装，不是签名或来源认证，不能替代市场自己的来源和供应链检查。
 
-The update contract was checked against installed **dshmarket 1.73.15 / DSH 0.2.2-rc.1**. Isolated adapter tests used a temporary profile and synthetic manager; no live GUI update, source migration or DSH restart was performed. Follow actual capabilities and operation results on other market versions.
+本次按已安装的 **dshmarket 1.73.15 / DSH 0.2.2-rc.1** 核对更新接口、来源匹配和桌面适配器；验证使用临时目录及模拟管理器，没有点击真实市场更新、切换本机安装来源或重启 DSH。后续市场版本以实际 capabilities 和更新结果为准。
 
-### Releases and developer diagnostics
+### 发布与开发诊断
 
-Keep the numeric package version, Git tag `vX.Y.Z` and source commit aligned. After editing any released file, run:
+每次发布保持 package 数字版本、Git 标签 `vX.Y.Z` 和同一提交一致。修改任意发布文件后执行：
 
 ```bash
 npm run prepare:release
@@ -106,71 +104,71 @@ npm run check:release
 npm pack --dry-run
 ```
 
-Commit the regenerated `integrity.json` with its source. These commands do not commit, tag or publish anything. GitHub-source updates require newer code and a higher package version on the remote source, not just a local version or tag change. Run `check:release` before producing an archive as well.
+将更新后的 `integrity.json` 和源码一起提交；这些命令不会提交、打标签或发布。GitHub 来源更新要求远端已有新代码及更高的 package 版本，不能只修改标签或本机版本。正式打包前同样先运行 `check:release`。
 
-Normal marketplace users need none of the following commands. Maintainers may verify a standalone installation or compare it against a checkout:
+普通市场用户不需要下面的诊断命令。维护者可在安装目录执行自检，或从 checkout 比较整个安装副本：
 
 ```bash
-# From the installed package directory: verify its shipped manifest without a checkout
+# 进入已安装包目录后，独立验证随包清单，不需要开发 checkout
 npm run check:install -- --self --json
-# Developer-only: compare a checkout with a specified installed package directory
+# 仅开发诊断：从 checkout 与指定安装目录比较内容
 npm run check:install -- /absolute/path/to/profile/node_modules/dsh-browser-use --json
 ```
 
-The [checker](scripts/check-install.mjs) only reads local files. It does not contact the network, install, stop processes or inspect dependencies, user data or already-loaded process code. Exit codes are `0` matching, `1` mismatched, `2` invalid arguments/directories. Atomic saves can detach per-file hard links, so matching version numbers or patching one host with `ln -f` is insufficient. Use the market for complete reinstalls; offline maintenance must stop the plugin and use the profile's own package manager, not replace live files individually.
+[检查脚本](scripts/check-install.mjs) 只读本机文件，不联网、不安装、不停止进程；退出码 `0` 为一致，`1` 为不一致，`2` 为参数/目录错误。它不检查依赖、用户资料或进程内已加载的代码。硬链接的 inode 可因编辑器原子保存而分离，因此不能只比版本号或只用 `ln -f` 修单个 host。实际修复交给市场整包安装；离线维护也须先停用插件并使用原 profile 的包管理器，勿在线逐文件覆盖。
 
-## Browser window
+## 浏览器窗口
 
-- Created with `show: false`, then shown through nonactivating `showInactive()` and parked offscreen. Ordinary tools never raise the window.
-- macOS/Linux retain opacity 0, unfocusable, click-through background windows. On macOS, the Dock menu lists numbered windows; clicking the icon reveals the most recently used ready window without creating another.
-- Windows uses one AppUserModelID and keeps a taskbar window entry per conversation, with no tray icon. When taskbar grouping and thumbnails are enabled in Windows, hover the grouped icon to select numbered windows; activating a preview restores that window onscreen.
-- To avoid blank transparent thumbnails, Windows keeps an opaque, focusable, click-through background surface, parks it outside all displays first, then shows it without activation. Switching away or hiding retains its taskbar entry. Revealed windows use configured dimensions capped to the primary display's work area.
-- Closing the window or switching to another app returns it to the background without closing the page. If the OS minimizes it, the host restores it silently and re-parks it. Tools never raise the window.
-- `BROWSER_USE_HIDE_DOCK=1` hides the Dock icon; `BROWSER_USE_KEEP_DOCK=1` takes precedence and keeps it visible.
+- 初始以 `show: false` 创建，再用 `showInactive()` 非激活显示并离屏停放；普通工具不会抬起窗口。
+- macOS/Linux 保留 opacity 0、不可聚焦、点击穿透的后台策略。macOS Dock 菜单按窗口编号提供查看入口；点击图标显示最近使用的已就绪窗口，不额外创建窗口。
+- Windows 使用同一个 AppUserModelID，并为每个对话保留任务栏窗口条目，不创建托盘图标。在系统启用任务栏合并及缩略图时，悬停分组图标可选择各编号窗口；点击预览激活对应窗口，将它移回屏内。
+- 为避免透明窗口缩略图空白，Windows 后台保持不透明绘制面、可激活和点击穿透，但先移到所有显示器范围之外，再非激活显示。切出或隐藏后仍保留任务栏条目。人工查看时尺寸采用配置值，并限制在主显示器工作区内。
+- 关闭窗口或切换应用会回到后台，页面继续存活。被系统最小化时会静默恢复并重新离屏停放。工具不会主动抬起窗口。
+- `BROWSER_USE_HIDE_DOCK=1` 隐藏 Dock 图标；`BROWSER_USE_KEEP_DOCK=1` 优先级更高，强制保留图标。
 
-`browser_use_type` and `browser_use_click` inject a pointer-events-none overlay: a black arrow, an action bubble, and a click ripple. It appears in screenshots without moving the user's real cursor.
+`browser_use_type` 和 `browser_use_click` 会注入 `pointer-events-none` 覆盖层，显示黑色箭头、动作气泡和点击涟漪。覆盖层会出现在截图中，但不会移动用户的真实光标。
 
-## Architecture
+## 架构
 
 ```text
-index.js                  Plugin setup and system prompt
-src/tools.js              Model-facing tool definitions and result formatting
-src/client.js             Lazy process startup and authenticated loopback RPC
-host/main.cjs             Conversation windows, shared Session, independent CDP and queues
+index.js                  插件装配与系统提示词
+src/tools.js              对外工具定义与结果格式化
+src/client.js             惰性启动进程与带认证的回环 RPC
+host/main.cjs             对话窗口映射、共享 Session、独立 CDP 与命令队列
 ```
 
-The child prints one ready line (`{ "port": ... }`) on stdout. The parent connects to `127.0.0.1`, sends `{ op: "hello", token }` with a random per-spawn token, and only then issues commands. Concurrent first calls share startup and wait for authentication. Commands are serialized per conversation; different windows do not share one operation queue. A second control connection is refused. Timeouts, disconnects, cancellation and disposal share cleanup paths. Cancellation and client timeouts notify the host with the original request and conversation IDs. Queued requests are skipped; running operations stop subsequent steps at safe boundaries. An already-sent CDP call retains the window queue barrier until it really settles, rather than overlapping later operations. Completed clicks, input and server-side effects cannot be undone.
+子进程在 stdout 打印一行 ready（`{ "port": ... }`）。父进程连接 `127.0.0.1`，先发送 `{ op: "hello", token }`（每次 spawn 随机生成 token），然后才发命令。并发的首次调用共用一次启动，且都等待认证完成。命令按对话分别排队，不同窗口互不等待；第二个控制连接会被拒绝。超时、断连、取消和卸载共用清理逻辑。取消与客户端超时会把原请求 ID 和对话 ID 通知 host。未执行的请求跳过，运行请求在安全边界停止后续步骤；已发出的 CDP 调用仍占用本窗口队列直到真正结束，不与下一请求交错。已经发生的点击、输入和服务端副作用无法撤销。
 
-### Cancellation, recovery and page validation
+### 取消、恢复与页面校验
 
-- No automatic close, reset or retries of mutations. Cancelling character-by-character input stops remaining characters but preserves those already entered. A mouse press already sent is paired with its release to avoid leaving a pressed button.
-- Host requests have a 60-second deadline including queue time. Open waits up to 15 seconds for main-frame navigation; back/reload wait up to 10 seconds. Tools or callers can cancel earlier. Timeouts report an error without releasing the barrier of still-running underlying work.
-- For a blocked window, warn that DOM, forms, sessionStorage and page state will be lost and obtain explicit user confirmation before `browser_use_reset` with `confirm: true`. It bypasses the page queue, destroys only this window and rejects old requests. The next ordinary tool call creates its replacement. Other conversations and shared cookies remain. `browser_use_close` is also urgent explicit closure, never routine cleanup.
-- Snapshot refs are never reused within one host lifetime. A new snapshot or main-frame navigation invalidates old refs. Click/type check actual DOM node identity, visibility, occlusion and focus rather than guessing from stale coordinates or a matching selector. After a stale-ref error, take another snapshot; do not retry mutations automatically.
-- Navigation observes this main-frame load and checks connection errors, HTTP failures, downloads and timeouts instead of treating the old document readyState as success. `browser_use_wait` still returns `ready: false` when its optional business conditions time out.
+- 不自动关闭、重置或重试提交动作。取消逐字输入会停止剩余字符，但已输入内容保留；鼠标已经按下时会完成同一次点击的释放，避免留下长按状态。
+- host 请求期限为 60 秒，包含排队时间；打开页面等待主框架最多 15 秒，后退/刷新最多 10 秒。工具层或调用方可以更早取消。超时会报错，但不会为了放行队列而丢弃仍在运行的底层调用。
+- 窗口完全卡住时，说明 DOM、表单、sessionStorage 和当前页面现场将丢失，并取得用户明确同意后调用 `browser_use_reset`，参数必须是 `confirm: true`。它绕过页面队列、销毁该窗口并拒绝旧请求；下一次普通工具调用才新建窗口。其他对话及共享 Cookie 不受此窗口清理影响。`browser_use_close` 同样是绕过队列的显式关闭，不用于日常收尾。
+- 快照 ref 在本次 host 生命周期中不重复分配。新快照和主框架导航使旧引用失效；点击/输入校验真实 DOM 节点及可见性、遮挡和焦点，不再通过旧坐标或相同 selector 猜测替代元素。收到 stale/ref 错误时先重新快照，不自动重试修改动作。
+- 导航等待本次主框架加载事件，并检查连接失败、HTTP 错误、下载响应和超时，不能把旧页面的 readyState 当作成功。`browser_use_wait` 的业务条件不满足仍返回 `ready: false`，与导航报错区分。
 
-### Reading the source
+### 阅读代码
 
-This project uses **JavaScript, not Java**. Important execution boundaries have Chinese comments for new readers. Suggested reading order:
+本项目使用 **JavaScript，不是 Java**。源码的重要边界附有中文注释；建议按以下顺序阅读：
 
-1. [index.js](index.js): how `apply` receives DSH services, configures the client and registers a disposal callback.
-2. [src/tools.js](src/tools.js): `parameters` / `schema` describe inputs and outputs, `execute` runs the operation, and `render` produces model-facing text.
-3. [src/client.js](src/client.js): a `Promise` represents a future result; `await` waits for it. Request IDs match responses to callers; every completion path must release listeners and timers.
-4. [host/main.cjs](host/main.cjs): distinguish Electron's main process, page JavaScript executed through CDP, and user-initiated window events. Page scripts receive serialized values rather than accessing main-process variables directly.
+1. [index.js](index.js)：看 `apply` 如何获取 DSH 服务、配置客户端和注册卸载清理函数。
+2. [src/tools.js](src/tools.js)：`parameters` / `schema` 描述输入输出，`execute` 执行业务，`render` 生成模型看到的文本。
+3. [src/client.js](src/client.js)：`Promise` 表示稍后返回的结果，`await` 等待结果；请求 id 用来把响应交还对应调用，监听器和计时器必须在所有结束路径释放。
+4. [host/main.cjs](host/main.cjs)：区分 Electron 主进程、通过 CDP 执行的页面 JavaScript，以及用户主动查看窗口的事件。页面脚本不能直接访问主进程变量；通过序列化参数传入值。
 
-`.js` uses ESM `import` / `export`; `.cjs` uses CommonJS `require`. These are module formats for the same language, with no extra compilation step.
+`.js` 使用 ESM 的 `import` / `export`，`.cjs` 使用 CommonJS 的 `require`，是同一语言的不同模块格式；无需新增编译步骤。
 
-## Limitations
+## 已知限制
 
-- One page/window per conversation; `browser_use_open` only replaces that conversation's page. Website HTTP(S) popups load in their owning window instead of creating unmanaged windows.
-- Snapshots do not include iframes or shadow roots; the cursor is injected only into the top document.
-- Screenshots capture the viewport, not a full-page scroll. The `fullPage` parameter is reserved and has no effect.
-- Typing is character-by-character through `Input.insertText`, with about 18 ms between characters.
-- Real Electron regressions run on macOS. Windows taskbar policy has platform-mock coverage but needs Windows hardware validation of thumbnail content, preview activation and multiple displays. Linux has no hardware validation.
-- Multi-display setups may show a blank tile in Mission Control; the window stays transparent and click-through, but there is no native z-order (`orderBack`) yet.
-- Windows controls grouping and thumbnail availability through system settings/policies; disabling grouping may show separate buttons. If the OS clamps a background window onscreen, opacity falls back to zero and previews may be blank rather than exposing the page on the desktop. Taskbar previews and per-window capture can expose page content; background operation is not a privacy boundary.
-- No client settings panel; enable or disable the plugin through its bundle row.
+- 每个对话只有一个窗口/页面；`browser_use_open` 只替换本对话页面。网页弹出的 HTTP(S) 链接仍在所属窗口打开，不创建额外无人管理的窗口。
+- 快照不包含 iframe 和 shadow root；光标只注入顶层文档。
+- 截图只截当前视口，不是整页滚动截图；`fullPage` 是预留参数，暂不生效。
+- 输入通过 `Input.insertText` 逐字符完成，字符间隔约 18 ms。
+- macOS 已做真实 Electron 回归；Windows 任务栏策略已做平台模拟测试，仍需在 Windows 实机验收缩略图内容、预览点击和多屏行为。Linux 未做实机验证。
+- 多显示器下，Mission Control 可能显示空白 tile；窗口保持透明且点击穿透，但尚无原生 z-order（`orderBack`）。
+- Windows 任务栏分组和缩略图由系统设置/策略控制；禁用合并时可能显示多个按钮。若系统将窗口夹回屏内，代码回退到透明状态，预览可能空白，避免直接显示后台页面。任务栏预览或按窗口采集可能暴露页面内容，后台状态不是隐私保护。
+- 没有客户端设置面板，通过 bundle 行启停插件。
 
-## License
+## 许可证
 
-MIT. See [LICENSE](./LICENSE).
+MIT。见 [LICENSE](./LICENSE)。
