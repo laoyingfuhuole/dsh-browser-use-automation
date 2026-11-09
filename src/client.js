@@ -13,7 +13,7 @@ import { spawn } from 'node:child_process'
 import { createRequire } from 'node:module'
 import { randomBytes } from 'node:crypto'
 import { connect } from 'node:net'
-import { existsSync, readFileSync, readdirSync } from 'node:fs'
+import { accessSync, constants, existsSync, readFileSync, readdirSync, statSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -22,67 +22,73 @@ import { verifyInstallation } from './integrity.js'
 const HOST_ENTRY = fileURLToPath(new URL('../host/main.cjs', import.meta.url))
 const READY_TIMEOUT_MS = 20_000
 const CALL_TIMEOUT_MS = 60_000
+const READY_OUTPUT_LIMIT = 64 * 1024
+
+/** 仅做文件系统检查，不启动程序；文件存在也不证明其架构/版本与包声明一致。 */
+function runnableFile(path) {
+  try {
+    if (!statSync(path).isFile()) return false
+    accessSync(path, process.platform === 'win32' ? constants.F_OK : constants.X_OK)
+    return true
+  } catch { return false }
+}
 
 /**
- * 查找可以直接执行 host/main.cjs 的 Electron 程序，不复用已打包的 DSH 应用。
- * 顺序：ELECTRON_PATH 显式路径 → 本包依赖 → DSH 各 profile 的 Electron。
- * 这里只读取安装路径，不执行安装脚本，也不会自动下载依赖。
- * @returns {string} Electron 可执行文件的本机路径。
+ * 读取 Electron 安装状态，不触发下载或安装脚本。返回值可供维护命令使用，
+ * 不把“npm 包存在”误当作“Electron 可执行文件就绪”。实际可运行性由启动握手验证。
+ */
+export function inspectElectronRuntime() {
+  const override = process.env.ELECTRON_PATH
+  if (typeof override === 'string' && override.length > 0) {
+    return runnableFile(override)
+      ? { status: 'ready', source: 'ELECTRON_PATH', path: override, packages: [] }
+      : { status: 'invalid-override', source: 'ELECTRON_PATH', path: override, packages: [] }
+  }
+  const roots = new Map()
+  try {
+    const require = createRequire(import.meta.url)
+    roots.set(dirname(require.resolve('electron')), 'package')
+  } catch { /* 本包依赖不可解析时，继续查找明确的 profile 安装。 */ }
+  const profiles = join(process.env.DSH_HOME || join(homedir(), '.dsh'), 'profiles')
+  try {
+    for (const name of readdirSync(profiles).sort()) {
+      const root = join(profiles, name, 'node_modules', 'electron')
+      if (existsSync(join(root, 'package.json')) && !roots.has(root)) roots.set(root, 'profile')
+    }
+  } catch { /* profiles 尚不存在或不可读取，不妨碍报告本包依赖的状态。 */ }
+  const packages = []
+  const expected = process.platform === 'darwin'
+    ? join('Electron.app', 'Contents', 'MacOS', 'Electron')
+    : process.platform === 'win32' ? 'electron.exe' : 'electron'
+  for (const [root, source] of roots) {
+    let version = null
+    let relative = ''
+    try { version = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8')).version ?? null } catch {}
+    try { relative = readFileSync(join(root, 'path.txt'), 'utf8').trim() } catch {}
+    const candidates = [relative && join(root, 'dist', relative), join(root, 'dist', expected)].filter(Boolean)
+    const path = candidates.find(runnableFile)
+    packages.push({ root, version, ready: !!path })
+    if (path) return { status: 'ready', source, path, packages }
+  }
+  return { status: packages.length > 0 ? 'binary-missing' : 'package-missing', source: null, path: null, packages }
+}
+
+/**
+ * 保留原调用入口；失败时明确区分覆盖路径无效、包缺失和依赖安装产物缺失。
+ * 诊断命令只读取状态，修复由用户/市场审批后执行，不私自下载、换镜像或改 profile。
  */
 export function resolveElectronPath() {
-  const override = process.env.ELECTRON_PATH
-  if (typeof override === 'string' && override.length > 0 && existsSync(override)) return override
-
-  try {
-    // ESM 文件通过 createRequire 使用包解析；resolve 只定位文件，不执行模块。
-    // path.txt 保存安装程序选择的可执行路径，其后是各平台默认目录的兜底。
-    const require = createRequire(import.meta.url)
-    const entry = require.resolve('electron')
-    const root = dirname(entry)
-    const pathFile = join(root, 'path.txt')
-    if (existsSync(pathFile)) {
-      const relative = readFileSync(pathFile, 'utf8').trim()
-      const candidate = join(root, 'dist', relative)
-      if (existsSync(candidate)) return candidate
-    }
-    for (const relative of [
-      join('dist', 'Electron.app', 'Contents', 'MacOS', 'Electron'),
-      join('dist', 'electron'),
-      join('dist', 'electron.exe'),
-    ]) {
-      const candidate = join(root, relative)
-      if (existsSync(candidate)) return candidate
-    }
-  } catch {
-    // 本包虽声明了 Electron 依赖，本地安装仍可能不完整；继续查找 profile。
-  }
-
-  const home = process.env.DSH_HOME || join(homedir(), '.dsh')
-  const profiles = join(home, 'profiles')
-  if (existsSync(profiles)) {
-    let names = []
-    try {
-      names = readdirSync(profiles)
-    } catch {
-      names = []
-    }
-    for (const name of names) {
-      const root = join(profiles, name, 'node_modules', 'electron', 'dist')
-      const candidates = [
-        join(root, 'Electron.app', 'Contents', 'MacOS', 'Electron'),
-        join(root, 'electron'),
-        join(root, 'electron.exe'),
-      ]
-      for (const candidate of candidates) {
-        if (existsSync(candidate)) return candidate
-      }
-    }
-  }
-
-  throw new Error(
-    'dsh-browser-use: no spawnable Electron binary. Install Electron (`npm install electron`), '
-    + 'set ELECTRON_PATH to a bare Electron executable, or install it into the DSH profile.',
-  )
+  const runtime = inspectElectronRuntime()
+  if (runtime.status === 'ready') return runtime.path
+  const error = new Error(runtime.status === 'invalid-override'
+    ? 'dsh-browser-use: ELECTRON_PATH must point to a runnable bare Electron file, not a directory or missing path. Correct or unset the override, then run npm run check:runtime.'
+    : runtime.status === 'binary-missing'
+      ? 'dsh-browser-use: Electron npm package exists but its executable is missing or not runnable (dist/path.txt). Run npm run check:runtime for the exact package path and approved repair steps; re-installing an already present npm package alone may not download its binary.'
+      : 'dsh-browser-use: no Electron package or executable found. Install the declared Electron dependency using this DSH profile’s package manager, or set ELECTRON_PATH to a runnable bare Electron executable. Run npm run check:runtime for details.')
+  error.code = runtime.status === 'invalid-override' ? 'BROWSER_USE_ELECTRON_PATH_INVALID'
+    : runtime.status === 'binary-missing' ? 'BROWSER_USE_ELECTRON_BINARY_MISSING' : 'BROWSER_USE_ELECTRON_PACKAGE_MISSING'
+  error.runtime = runtime
+  throw error
 }
 
 /**
@@ -227,17 +233,28 @@ export class HostClient {
     // stdout 仅负责启动通知；真正的操作通过独立 TCP 通道传输。
     // 一行 JSON 可能分多块到达，必须等到换行后再解析。
     let output = ''
+    let readyBytes = 0
     child.stdout.setEncoding('utf8')
     const port = await waitForEvent(child.stdout, 'data', chunk => {
+      readyBytes += Buffer.byteLength(chunk, 'utf8')
+      if (readyBytes > READY_OUTPUT_LIMIT) throw new Error(`browser host ready output exceeded ${READY_OUTPUT_LIMIT} bytes`)
       output += chunk
-      const newline = output.indexOf('\n')
-      if (newline < 0) return
-      try {
-        const { port } = JSON.parse(output.slice(0, newline))
-        if (!Number.isInteger(port) || port < 1 || port > 65535) throw new Error('invalid port')
-        return port
-      } catch {
-        throw new Error(`browser host sent invalid ready line: ${output.slice(0, 200)}`)
+      let newline = output.indexOf('\n')
+      while (newline >= 0) {
+        const line = output.slice(0, newline).trim()
+        output = output.slice(newline + 1)
+        newline = output.indexOf('\n')
+        // Windows Electron 可能在执行脚本前写 CRLF。只跳过空白行，不能把真实
+        // 的非空错误输出也忽略，否则启动失败会被误报成普通 ready 超时。
+        if (line === '') continue
+        try {
+          const value = JSON.parse(line)
+          const port = value?.port
+          if (!Number.isInteger(port) || port < 1 || port > 65535) throw new Error('invalid port')
+          return port
+        } catch {
+          throw new Error(`browser host sent invalid ready line: ${JSON.stringify(line.slice(0, 200))}`)
+        }
       }
     }, signal, READY_TIMEOUT_MS, `browser host did not become ready in ${READY_TIMEOUT_MS}ms`)
     signal.throwIfAborted()

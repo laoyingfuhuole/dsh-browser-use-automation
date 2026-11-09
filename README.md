@@ -2,13 +2,13 @@
 
 面向 [DeepSeek Harness](https://github.com/deepseek-ai) 的后台浏览器自动化插件。一个 Electron host 为不同对话分配独立编号的离屏窗口，使用 CDP 输入和快照 ref，不抢焦点；各窗口共享登录状态与持久化站点数据。
 
-这不是另一个浏览器插件的 fork。它与 `dsh-builtin-browser` 不共享包 id、工具名、客户端模块、设置路由或浏览器窗口。
-
 ## 当前版本
 
-`v0.3.0`：新增按对话独立窗口、共享登录数据、请求取消、显式恢复，以及过期 ref 和导航失败校验。`browser_use_close` 只关闭本对话窗口；`browser_use_reset` 必须经过明确确认。多轮对话默认保留页面。
+`v0.3.1`：修复 Windows 启动前导 CRLF 导致的握手失败，增加只读 Electron 就绪诊断；Windows 点 X 关闭当前对话窗口，最后一个原生窗口关闭后刷新共享存储并退出 host。macOS 保持 X 隐藏、Cmd+Q 退出整个浏览器 host。项目仅保留本篇中文 README。
 
-macOS 真实 Electron 回归已覆盖主要路径；Windows 任务栏预览和真实 DSH UI 双对话仍需实机验收。对外版本使用 `v0.3.0`、`v0.3.1` 依次迭代；package.json 使用标准数字版本 `0.3.0`。更改版本号不等于已经提交、打标签或发布。
+保留 `v0.3.0` 的按对话独立窗口、共享登录数据、请求取消、显式恢复、过期 ref 与导航失败校验。多轮对话默认保留页面；`browser_use_reset` 必须经过明确确认。
+
+macOS 真实 Electron 回归已覆盖主要路径；Windows 新修复已通过平台模拟测试，仍需用匹配版本、无 shim 的 Electron 在 Windows 实机复验。真实 DSH UI 双对话验收仍待完成。对外使用 `vX.Y.Z` 标签，package.json 使用标准数字版本 `0.3.1`。
 
 ## 功能
 
@@ -72,13 +72,25 @@ npm install
 }
 ```
 
-重新安装 profile 依赖、重启 DSH，确认 `browser_use_*` 工具出现。[Bundle patch](cordis.patch.yml) 只添加一个插件行；浏览器在首次工具调用时启动。不依赖 `dsh-builtin-browser`，也可以与它共存。
+重新安装 profile 依赖、重启 DSH，确认 `browser_use_*` 工具出现。[Bundle patch](cordis.patch.yml) 只添加一个插件行；浏览器在首次工具调用时启动。与 DSH 官方 `@deepseek-ai/dsh-browser-use` 注册服务及 Playwright MCP 提供方属于不同实现；只应按各自集成方式选择启用的浏览器后端。
 
-Electron 查找顺序：`ELECTRON_PATH` → 本包依赖 → `$DSH_HOME/profiles/*/node_modules/electron/dist`（`DSH_HOME` 默认为 `~/.dsh`）。查找不会触发下载；缺少二进制时可安装：
+Electron 查找顺序：`ELECTRON_PATH` → 本包依赖 → `$DSH_HOME/profiles/*/node_modules/electron/dist`（`DSH_HOME` 默认为 `~/.dsh`）。显式覆盖路径无效时会报错，不悄悄使用其他程序。查找只读取文件，不触发下载；npm 包存在不代表 Electron 二进制已经就绪。
+
+从插件目录运行只读预检：
 
 ```bash
-npm install electron@^44.10.0
+npm run check:runtime
+npm run check:runtime -- --json
 ```
+
+预检区分依赖包缺失、`dist`/可执行文件未下载、覆盖路径无效和文件就绪；文件就绪不保证实际版本/架构匹配，仍以真实 host 启动为准。包缺失时，使用该 DSH profile 原有的包管理器安装声明的 Electron 依赖；如果包已存在但二进制缺失，先确认允许下载，再按报告给出的具体路径运行该包的安装器：
+
+```bash
+node "/absolute/path/to/profile/node_modules/electron/install.js"
+```
+
+这条修复命令可能联网，预检不会替你执行。`npm --registry` 仅控制 npm 包源，不保证 Electron 下载源也改变；需要二进制镜像时显式配置并核验 `ELECTRON_MIRROR`。不要用低版本缓存、伪装脚本或替换安装目录下的 `electron.exe` 作为正式修复。
+
 
 可选插件配置：`width`（默认 1400）、`height`（900）、`screenshotDir`（默认 `$DSH_HOME/browser-use/screenshots`）。旧版 `quiet` 配置会被忽略；始终默认在后台运行。仅需独立数据目录时，启动前设置 `BROWSER_USE_USER_DATA_DIR` 为绝对路径；不设置则沿用旧目录，设置新路径不会自动搬迁旧登录数据。
 
@@ -123,7 +135,9 @@ npm run check:install -- /absolute/path/to/profile/node_modules/dsh-browser-use 
 - macOS/Linux 保留 opacity 0、不可聚焦、点击穿透的后台策略。macOS Dock 菜单按窗口编号提供查看入口；点击图标显示最近使用的已就绪窗口，不额外创建窗口。
 - Windows 使用同一个 AppUserModelID，并为每个对话保留任务栏窗口条目，不创建托盘图标。在系统启用任务栏合并及缩略图时，悬停分组图标可选择各编号窗口；点击预览激活对应窗口，将它移回屏内。
 - 为避免透明窗口缩略图空白，Windows 后台保持不透明绘制面、可激活和点击穿透，但先移到所有显示器范围之外，再非激活显示。切出或隐藏后仍保留任务栏条目。人工查看时尺寸采用配置值，并限制在主显示器工作区内。
-- 关闭窗口或切换应用会回到后台，页面继续存活。被系统最小化时会静默恢复并重新离屏停放。工具不会主动抬起窗口。
+- Windows 点击 X 真正销毁当前对话窗口，取消它正在执行及排队的请求，不影响其他对话；点掉最后一个原生窗口后刷新共享 Cookie/存储并退出空 host。下次工具调用可重新启动，但未提交表单、DOM 和页面现场不会恢复。该显式关闭直接销毁页面，不等待网页的 `beforeunload` 确认。
+- macOS 点 X 仅隐藏当前窗口，Cmd+Q 退出整个浏览器 host；Linux 沿用原有关闭隐藏行为。切换应用会回到后台，页面继续存活。被系统最小化时会非激活恢复并重新离屏停放。
+- 工具 `browser_use_close` / `browser_use_reset` 仍只作用于指定对话，按原协议保留共享 host 以便重建；不按轮次、空闲或后台状态自动清理窗口。工具不会主动抬起窗口。
 - `BROWSER_USE_HIDE_DOCK=1` 隐藏 Dock 图标；`BROWSER_USE_KEEP_DOCK=1` 优先级更高，强制保留图标。
 
 `browser_use_type` 和 `browser_use_click` 会注入 `pointer-events-none` 覆盖层，显示黑色箭头、动作气泡和点击涟漪。覆盖层会出现在截图中，但不会移动用户的真实光标。

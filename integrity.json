@@ -1,18 +1,18 @@
 {
   "schema": 1,
   "name": "dsh-browser-use",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "files": {
     "LICENSE": "e2a71b08decd586efc52012cc42ec91391e371c1d3d1b12982aea4ac3fd7e0e3",
-    "README-zh.md": "5a3b9f6e82ab5c52f0d70c0fd94dfac8f263c37f6ccc2d7c55f797b0a1f3a246",
-    "README.md": "5a3b9f6e82ab5c52f0d70c0fd94dfac8f263c37f6ccc2d7c55f797b0a1f3a246",
+    "README.md": "0d60f71ffdc1d2eeab6b951097e7fee9e2b8082951a1076c81c25365f1ce073e",
     "cordis.patch.yml": "db92fb406660c08c6f78f535633562c3e80295385966179d1f3aab979da5a1b0",
-    "host/main.cjs": "bdbd9ad86818c7b34ee939d31184d4cb82c20b6d8fe33c272bb897fa45e0f187",
+    "host/main.cjs": "d6dd443bef958f60bce46571a24d938b34578c2e4cffba78776859eceeae0aa8",
     "index.js": "f02fbf71d69a8d56ebd6edf97cb5197f64ea7452fbe74e8406fbec922a96807b",
-    "package.json": "4d00933c463f8244fa525baf06a14264deeb71e706edddf8cb112814c0f5b1bf",
+    "package.json": "9cb767d129aeb31773819139cf75591892905e2de7dac703c9b3f89f4fc15906",
     "scripts/check-install.mjs": "99cfb699f9bb8bcb362eb95a818cc972bd0dca7b6c85dbdf1d3258d2c98383e2",
+    "scripts/check-runtime.mjs": "db1210fb8301ce9e7b8c7d3e0292b80069a122f8fefdd0fbfb906c28c5787670",
     "scripts/prepare-release.mjs": "b5b3b6cee5ffbcfd2e2e78345a51d3f19f43b0c941a10c561bc72c35cb3d0d05",
-    "src/client.js": "80d2f7023a67b628d596df5ec8ffef84e23ff5bc48dee8bc3cd8a9a709cf6279",
+    "src/client.js": "e9009a59b97ffe2277b4ad3032f2620f9e752137c7012b591514c41ccac14fba",
     "src/integrity.js": "c840446775b7eaff15b2d675af5ffa6b7da8bb969b49429efc46e411bf3eedc4",
     "src/tools.js": "a5d55ba7cc5619f8107073f6d0b3a46e44e5c31cc84f11f9c1a6fd7868924941"
   }

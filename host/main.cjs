@@ -123,6 +123,9 @@ function createConversation(conversationId) {
   function invalidateRefs() { refs.clear(); documentVersion += 1 }
   let revealReady = false
   let disposed = false
+  // 原生关闭意图只属于这一代记录；RPC close/reset、初始化失败和宿主退出
+  // 均不设置它，避免程序销毁最后一个窗口时误把可复用的宿主也退出。
+  let nativeCloseRequested = false
   let failure = null
   let watch = null
   let activeJob = null
@@ -823,13 +826,25 @@ function createConversation(conversationId) {
     win.webContents.on('render-process-gone', (_event, details) => {
       dispose(new Error(`renderer gone: ${details.reason}`))
     })
-    // 点击关闭按钮只是退出人工查看；真正退出（断连、信号、Cmd+Q）
-    // 已设置 quitting，不能再 preventDefault，否则宿主会无法结束。
+    // macOS/Linux 的原生关闭仍只退出人工查看；宿主退出时放行关闭。
+    // Windows 的 X/Alt+F4 则明确丢弃本代窗口，立即拒绝其执行中与排队请求。
+    // 先阻止默认 close，再由 dispose 直接 destroy，故不会被网页 beforeunload
+    // 挂起或弹出确认框；未提交的表单/页面内存状态会丢失，共享 Cookie 不清除。
     win.on('close', event => {
-      if (quitting !== true && !disposed) {
-        event.preventDefault()
+      if (quitting || disposed || nativeCloseRequested) return
+      event.preventDefault()
+      if (!WINDOWS_TASKBAR) {
         hideToBackground()
+        return
       }
+      // 只接受当前登记记录的原生关闭；旧代迟到的事件不能影响重建的窗口。
+      if (windows.get(conversationId) !== record) return
+      nativeCloseRequested = true
+      dispose(new Error('conversation window closed'))
+      // 仅用户关闭最后一扇原生窗口才退出；不在 window-all-closed 中推断意图。
+      // 此路径不经过 await，quitHost 同步设置 quitting，刷新共享存储期间
+      // 新 RPC 因而会被拒绝，不能一边退出一边偷偷创建新窗口。
+      if (windows.size === 0) quitHost()
     })
     win.on('minimize', () => {
       // 最小化会影响绘制表面，稍后非激活地退回后台；Windows 不调用 restore。
@@ -1035,7 +1050,8 @@ async function start() {
   })
 }
 
-// 操作系统信号、控制连接断开和 Cmd+Q 才结束宿主，而非某个对话的 close。
+// 信号、控制连接断开、Cmd+Q 和 Windows 用户关闭最后原生窗口才结束宿主；
+// RPC close/reset 只处置对应对话，不改变共享宿主的惰性重建语义。
 process.on('SIGTERM', quitHost)
 process.on('SIGINT', quitHost)
 
@@ -1057,5 +1073,6 @@ app.on('before-quit', () => {
   for (const record of windows.values()) record.dispose(new Error('host shutting down'))
 })
 app.on('window-all-closed', () => {
-  // 所有对话窗口关闭后仍保留 TCP 服务，下一条操作可以重新创建窗口。
+  // 程序销毁、reset 和初始化失败同样到达这里，不能据此推断用户要退出。
+  // 保留 TCP 服务以便惰性重建；Windows 最后一次原生关闭由本代 close 处理。
 })
