@@ -1,0 +1,2 @@
+# 发布清单按文件字节校验；Windows checkout 也保留 LF，避免无源码变化的哈希差异。
+* text=auto eol=lf

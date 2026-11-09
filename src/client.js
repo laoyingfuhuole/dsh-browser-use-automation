@@ -17,6 +17,7 @@ import { existsSync, readFileSync, readdirSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { verifyInstallation } from './integrity.js'
 
 const HOST_ENTRY = fileURLToPath(new URL('../host/main.cjs', import.meta.url))
 const READY_TIMEOUT_MS = 20_000
@@ -197,6 +198,8 @@ export class HostClient {
   }
 
   async start(signal) {
+    // 磁盘被市场换包后，旧实例不得悄悄启动新 host；由 DSH 完成重载后再使用。
+    verifyInstallation()
     const electron = resolveElectronPath()
     const token = randomBytes(24).toString('hex')
     const env = { ...process.env, BROWSER_USE_TOKEN: token }

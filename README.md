@@ -6,6 +6,12 @@ Background browser automation for [DeepSeek Harness](https://github.com/deepseek
 
 This is not a fork of another browser plugin. It shares no package id, tool name, client module, settings route, or browser window with `dsh-builtin-browser`.
 
+## Current version
+
+`v0.3.0` includes conversation-scoped windows, shared login data, request cancellation, explicit recovery, stale-ref protection and navigation failure handling. `browser_use_close` closes only this conversation's window; `browser_use_reset` requires explicit confirmation. Multi-turn conversations retain their pages by default.
+
+Real Electron regressions cover the main macOS paths. Windows taskbar previews and two live DSH UI conversations still require hardware/integration acceptance. Public versions use `v0.3.0`, `v0.3.1`, and so on; package.json uses the standard numeric `0.3.0`. Updating metadata does not create a commit, tag or release.
+
 ## What it does
 
 - Starts a real Electron/Chromium window lazily on the first tool call.
@@ -77,6 +83,41 @@ npm install electron@^44.10.0
 ```
 
 Optional plugin configuration: `width` (default 1400), `height` (900), and `screenshotDir` (default `$DSH_HOME/browser-use/screenshots`). The legacy `quiet` option is ignored; background operation is always the default. Set `BROWSER_USE_USER_DATA_DIR` to an absolute path before startup only when a separate profile is needed. Without it, the previous data location is retained; selecting a new path does not migrate existing login data.
+
+### Updating through the dshmarket GUI
+
+Several catalog entries may share this package name. Select the source **`laoyingfuhuole/dsh-browser-use`**, not another repository or an unrelated same-named npm package. This project's current catalog entry is GitHub-sourced with no npm identity.
+
+- After installation from the correct repository entry, dshmarket's Update button checks remote versions, selects the source commit, installs the complete package and manages reloads. No extra plugin command is required. This plugin does not download updates, edit the profile or force a restart.
+- Development `file:` / `link:` installs are not online market sources. Local edits or version bumps do not create remote updates. To use the market workflow, finish active work and use its restore/source-switch action to select the correct GitHub entry. If unavailable, follow the market's removal/reinstall flow; never fall back to the unrelated same-named npm package.
+- Follow the market's actual application result: `applied` and `restart-required` are different outcomes. A completed download or matching disk version is not proof that running modules were reloaded. Updating may unload the plugin and close browser windows; finish work or explicitly accept page-state loss first.
+- [integrity.json](integrity.json) is included in the repository and package. Plugin activation and host startup automatically verify release-file SHA-256 hashes. Missing files, mismatched versions or an old host mixed with new clients fail explicitly, requiring a complete market reinstall and reload. Existing windows are not automatically closed and market-owned files are not rewritten by this check.
+- No installation lifecycle hooks such as `prepare` or `postinstall`, and no developer checkout, are required for this verification. This detects mixed files, not author authenticity; it supplements rather than replaces the market's source and supply-chain checks.
+
+The update contract was checked against installed **dshmarket 1.73.15 / DSH 0.2.2-rc.1**. Isolated adapter tests used a temporary profile and synthetic manager; no live GUI update, source migration or DSH restart was performed. Follow actual capabilities and operation results on other market versions.
+
+### Releases and developer diagnostics
+
+Keep the numeric package version, Git tag `vX.Y.Z` and source commit aligned. After editing any released file, run:
+
+```bash
+npm run prepare:release
+npm run check:release
+npm pack --dry-run
+```
+
+Commit the regenerated `integrity.json` with its source. These commands do not commit, tag or publish anything. GitHub-source updates require newer code and a higher package version on the remote source, not just a local version or tag change. Run `check:release` before producing an archive as well.
+
+Normal marketplace users need none of the following commands. Maintainers may verify a standalone installation or compare it against a checkout:
+
+```bash
+# From the installed package directory: verify its shipped manifest without a checkout
+npm run check:install -- --self --json
+# Developer-only: compare a checkout with a specified installed package directory
+npm run check:install -- /absolute/path/to/profile/node_modules/dsh-browser-use --json
+```
+
+The [checker](scripts/check-install.mjs) only reads local files. It does not contact the network, install, stop processes or inspect dependencies, user data or already-loaded process code. Exit codes are `0` matching, `1` mismatched, `2` invalid arguments/directories. Atomic saves can detach per-file hard links, so matching version numbers or patching one host with `ln -f` is insufficient. Use the market for complete reinstalls; offline maintenance must stop the plugin and use the profile's own package manager, not replace live files individually.
 
 ## Browser window
 

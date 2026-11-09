@@ -1,0 +1,19 @@
+{
+  "schema": 1,
+  "name": "dsh-browser-use",
+  "version": "0.3.0",
+  "files": {
+    "LICENSE": "e2a71b08decd586efc52012cc42ec91391e371c1d3d1b12982aea4ac3fd7e0e3",
+    "README-zh.md": "eedd52ea018b611366d0119d5bc91d8519bf9af5df60c49ef070e83e828cc144",
+    "README.md": "1de7dbec302f0313b4ee594a098dafdb8ec153bfe90a31735a4a59fabbfff746",
+    "cordis.patch.yml": "db92fb406660c08c6f78f535633562c3e80295385966179d1f3aab979da5a1b0",
+    "host/main.cjs": "bdbd9ad86818c7b34ee939d31184d4cb82c20b6d8fe33c272bb897fa45e0f187",
+    "index.js": "f02fbf71d69a8d56ebd6edf97cb5197f64ea7452fbe74e8406fbec922a96807b",
+    "package.json": "a7f24f20a07fead1a20108b3c0ff9ae877c538d3ce1e39b2390a2504b3719711",
+    "scripts/check-install.mjs": "99cfb699f9bb8bcb362eb95a818cc972bd0dca7b6c85dbdf1d3258d2c98383e2",
+    "scripts/prepare-release.mjs": "b5b3b6cee5ffbcfd2e2e78345a51d3f19f43b0c941a10c561bc72c35cb3d0d05",
+    "src/client.js": "80d2f7023a67b628d596df5ec8ffef84e23ff5bc48dee8bc3cd8a9a709cf6279",
+    "src/integrity.js": "c840446775b7eaff15b2d675af5ffa6b7da8bb969b49429efc46e411bf3eedc4",
+    "src/tools.js": "a5d55ba7cc5619f8107073f6d0b3a46e44e5c31cc84f11f9c1a6fd7868924941"
+  }
+}

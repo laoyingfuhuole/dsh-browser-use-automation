@@ -6,6 +6,12 @@
 
 这不是另一个浏览器插件的 fork。它与 `dsh-builtin-browser` 不共享包 id、工具名、客户端模块、设置路由或浏览器窗口。
 
+## 当前版本
+
+`v0.3.0`：新增按对话独立窗口、共享登录数据、请求取消、显式恢复，以及过期 ref 和导航失败校验。`browser_use_close` 只关闭本对话窗口；`browser_use_reset` 必须经过明确确认。多轮对话默认保留页面。
+
+macOS 真实 Electron 回归已覆盖主要路径；Windows 任务栏预览和真实 DSH UI 双对话仍需实机验收。对外版本使用 `v0.3.0`、`v0.3.1` 依次迭代；package.json 使用标准数字版本 `0.3.0`。更改版本号不等于已经提交、打标签或发布。
+
 ## 功能
 
 - 首次工具调用时才惰性启动真实 Electron/Chromium 窗口。
@@ -77,6 +83,41 @@ npm install electron@^44.10.0
 ```
 
 可选插件配置：`width`（默认 1400）、`height`（900）、`screenshotDir`（默认 `$DSH_HOME/browser-use/screenshots`）。旧版 `quiet` 配置会被忽略；始终默认在后台运行。仅需独立数据目录时，启动前设置 `BROWSER_USE_USER_DATA_DIR` 为绝对路径；不设置则沿用旧目录，设置新路径不会自动搬迁旧登录数据。
+
+### 通过 dshmarket 图形界面更新
+
+市场目录可能有多个同名插件；必须核对来源是 **`laoyingfuhuole/dsh-browser-use`**，不要按名称选择其他仓库或同名 npm 包。本项目当前市场条目是 GitHub 来源，不声明 npm 包。
+
+- 从正确仓库条目安装后，由 dshmarket 的“更新”按钮检查远端版本、选择提交、执行完整安装并管理插件重载。无需额外运行本项目命令行脚本，插件也不自行下载安装、修改 profile 或强制重启。
+- `file:` / `link:` 开发目录与市场在线来源不同，改源码或本地版本号不能让远端出现更新。想使用市场更新，应在确认停止当前任务后，通过市场切换/恢复到正确 GitHub 条目；恢复不可用时按市场提示移除开发安装并重新安装，不能回退到同名 npm 包。
+- 更新状态以市场结果为准：`applied` 表示已应用，`restart-required` 等状态需按桌面程序提示处理；不要将下载完成或文件版本一致视为进程已经重载。更新卸载可能关闭正在运行的浏览器窗口，应先结束或确认放弃当前页面现场，不能无感更新活跃对话。
+- 清单文件 [integrity.json](integrity.json) 随仓库与发布包分发。插件加载以及启动新 host 前自动检查发布文件的 SHA-256；缺文件、版本不符、旧 host 混装会明确拒绝运行，要求通过市场完整重装并重载。不会自动关闭现有窗口或覆盖市场正在安装的文件。
+- 无需 `prepare` / `postinstall` 等安装脚本，也不依赖本机源码目录；因此市场安装时禁用额外构建脚本仍可校验本插件。完整性校验用于发现混装，不是签名或来源认证，不能替代市场自己的来源和供应链检查。
+
+本次按已安装的 **dshmarket 1.73.15 / DSH 0.2.2-rc.1** 核对更新接口、来源匹配和桌面适配器；验证使用临时目录及模拟管理器，没有点击真实市场更新、切换本机安装来源或重启 DSH。后续市场版本以实际 capabilities 和更新结果为准。
+
+### 发布与开发诊断
+
+每次发布保持 package 数字版本、Git 标签 `vX.Y.Z` 和同一提交一致。修改任意发布文件后执行：
+
+```bash
+npm run prepare:release
+npm run check:release
+npm pack --dry-run
+```
+
+将更新后的 `integrity.json` 和源码一起提交；这些命令不会提交、打标签或发布。GitHub 来源更新要求远端已有新代码及更高的 package 版本，不能只修改标签或本机版本。正式打包前同样先运行 `check:release`。
+
+普通市场用户不需要下面的诊断命令。维护者可在安装目录执行自检，或从 checkout 比较整个安装副本：
+
+```bash
+# 进入已安装包目录后，独立验证随包清单，不需要开发 checkout
+npm run check:install -- --self --json
+# 仅开发诊断：从 checkout 与指定安装目录比较内容
+npm run check:install -- /absolute/path/to/profile/node_modules/dsh-browser-use --json
+```
+
+[检查脚本](scripts/check-install.mjs) 只读本机文件，不联网、不安装、不停止进程；退出码 `0` 为一致，`1` 为不一致，`2` 为参数/目录错误。它不检查依赖、用户资料或进程内已加载的代码。硬链接的 inode 可因编辑器原子保存而分离，因此不能只比版本号或只用 `ln -f` 修单个 host。实际修复交给市场整包安装；离线维护也须先停用插件并使用原 profile 的包管理器，勿在线逐文件覆盖。
 
 ## 浏览器窗口
 

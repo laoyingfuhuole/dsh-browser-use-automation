@@ -1,6 +1,6 @@
 {
   "name": "dsh-browser-use",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Background browser automation for DeepSeek Harness: conversation-scoped Electron windows with shared login storage, CDP input, snapshot refs and no focus stealing.",
   "type": "module",
   "main": "index.js",
@@ -16,8 +16,16 @@
     "cordis.patch.yml",
     "README.md",
     "README-zh.md",
-    "LICENSE"
+    "LICENSE",
+    "scripts/check-install.mjs",
+    "scripts/prepare-release.mjs",
+    "integrity.json"
   ],
+  "scripts": {
+    "check:install": "node scripts/check-install.mjs",
+    "prepare:release": "node scripts/prepare-release.mjs",
+    "check:release": "node scripts/prepare-release.mjs --check"
+  },
   "dsh": {
     "bundle": {
       "patch": "./cordis.patch.yml"

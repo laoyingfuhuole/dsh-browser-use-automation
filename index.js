@@ -11,6 +11,7 @@
 
 import { HostClient } from './src/client.js'
 import { registerTools } from './src/tools.js'
+import { verifyInstallation } from './src/integrity.js'
 
 export const name = 'dsh-browser-use'
 // 告诉 DSH 本插件依赖哪两个服务；ctx 由框架提供，不是浏览器里的页面对象。
@@ -23,6 +24,8 @@ export const inject = ['tools', 'systemPrompt']
  * @param {{width?: number, height?: number, screenshotDir?: string}} [config] 窗口尺寸与截图目录。
  */
 export function apply(ctx, config = {}) {
+  // 市场 GUI 更新也走这个加载入口；整包不一致就拒绝注册，不让新客户端配旧 host。
+  verifyInstallation()
   const client = new HostClient({
     width: positiveInt(config.width, 1400),
     height: positiveInt(config.height, 900),
