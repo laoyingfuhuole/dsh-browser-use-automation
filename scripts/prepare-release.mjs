@@ -14,7 +14,7 @@ const args = process.argv.slice(2)
 try {
   if (args.length > 1 || (args.length === 1 && args[0] !== '--check')) throw new Error('Usage: node scripts/prepare-release.mjs [--check]')
   const pkg = JSON.parse(readFileSync(resolve(root, 'package.json'), 'utf8'))
-  if (pkg.name !== 'dsh-browser-use' || !/^\d+\.\d+\.\d+$/.test(pkg.version) || !Array.isArray(pkg.files)) throw new Error('Expected numeric release version and explicit package.files list')
+  if (pkg.name !== 'dsh-parallel-browser' || !/^\d+\.\d+\.\d+$/.test(pkg.version) || !Array.isArray(pkg.files)) throw new Error('Expected numeric release version and explicit package.files list')
   const paths = new Set(['package.json'])
   function visit(path) {
     if (typeof path !== 'string' || path.split('/').some(part => !/^[A-Za-z0-9_.-]+$/.test(part))

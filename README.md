@@ -1,14 +1,16 @@
-# dsh-browser-use
+# dsh-parallel-browser
 
 面向 [DeepSeek Harness](https://github.com/deepseek-ai) 的后台浏览器自动化插件。一个 Electron host 为不同对话分配独立编号的离屏窗口，使用 CDP 输入和快照 ref，不抢焦点；各窗口共享登录状态与持久化站点数据。
 
 ## 当前版本
 
+`v0.3.2`：包名迁移到 npm **`dsh-parallel-browser`**（原 `dsh-browser-use`），安装与更新改走市场 / npm 路线；功能与 `v0.3.1` 一致。
+
 `v0.3.1`：修复 Windows 启动前导 CRLF 导致的握手失败，增加只读 Electron 就绪诊断；Windows 点 X 关闭当前对话窗口，最后一个原生窗口关闭后刷新共享存储并退出 host。macOS 保持 X 隐藏、Cmd+Q 退出整个浏览器 host。项目仅保留本篇中文 README。
 
 保留 `v0.3.0` 的按对话独立窗口、共享登录数据、请求取消、显式恢复、过期 ref 与导航失败校验。多轮对话默认保留页面；`browser_use_reset` 必须经过明确确认。
 
-macOS 真实 Electron 回归已覆盖主要路径；Windows 新修复已通过平台模拟测试，仍需用匹配版本、无 shim 的 Electron 在 Windows 实机复验。真实 DSH UI 双对话验收仍待完成。对外使用 `vX.Y.Z` 标签，package.json 使用标准数字版本 `0.3.1`。
+macOS 真实 Electron 回归已覆盖主要路径；Windows 新修复已通过平台模拟测试，仍需用匹配版本、无 shim 的 Electron 在 Windows 实机复验。真实 DSH UI 双对话验收仍待完成。对外使用 `vX.Y.Z` 标签，package.json 使用标准数字版本 `0.3.2`。
 
 ## 功能
 
@@ -50,23 +52,27 @@ macOS 真实 Electron 回归已覆盖主要路径；Windows 新修复已通过�
 
 ## 安装
 
-要求：Node >= 22.19，DSH >= 0.1.1-rc.2 < 0.3.0，Electron 44+。在项目目录运行：
+要求：Node >= 22.19，DSH >= 0.1.1-rc.2 < 0.3.0，Electron 44+。
+
+推荐从插件市场安装，或直接执行：
 
 ```bash
-npm install
+dsh plugin add dsh-parallel-browser
 ```
 
-将项目加入 DSH profile 的依赖和 bundles：
+首次工具调用时才启动浏览器；Electron 依赖随包声明，由 DSH profile 的包管理器负责安装。
+
+开发/调试时也可以改用本仓库源码，把项目加入 DSH profile 的依赖和 bundles：
 
 ```jsonc
 // ~/.dsh/profiles/<profile>/package.json
 {
   "dependencies": {
-    "dsh-browser-use": "file:/absolute/path/to/dsh-browser-use"
+    "dsh-parallel-browser": "file:/absolute/path/to/dsh-parallel-browser"
   },
   "dsh": {
     "profile": {
-      "bundles": ["dsh-browser-use"]
+      "bundles": ["dsh-parallel-browser"]
     }
   }
 }
@@ -96,10 +102,10 @@ node "/absolute/path/to/profile/node_modules/electron/install.js"
 
 ### 通过 dshmarket 图形界面更新
 
-市场目录可能有多个同名插件；必须核对来源是 **`laoyingfuhuole/dsh-browser-use`**，不要按名称选择其他仓库或同名 npm 包。本项目当前市场条目是 GitHub 来源，不声明 npm 包。
+市场目录可能有多个同名插件；必须核对来源是 **`laoyingfuhuole/dsh-browser-use`**。本项目的 npm 包是 **`dsh-parallel-browser`**，市场会从仓库 `package.json` 自动识别它，并按 npm 版本检查更新。
 
 - 从正确仓库条目安装后，由 dshmarket 的“更新”按钮检查远端版本、选择提交、执行完整安装并管理插件重载。无需额外运行本项目命令行脚本，插件也不自行下载安装、修改 profile 或强制重启。
-- `file:` / `link:` 开发目录与市场在线来源不同，改源码或本地版本号不能让远端出现更新。想使用市场更新，应在确认停止当前任务后，通过市场切换/恢复到正确 GitHub 条目；恢复不可用时按市场提示移除开发安装并重新安装，不能回退到同名 npm 包。
+- `file:` / `link:` 开发目录与市场在线来源不同，改源码或本地版本号不能让远端出现更新。想使用市场更新，应在确认停止当前任务后，通过市场切换/恢复到正确 GitHub 条目；恢复不可用时按市场提示移除开发安装并重新安装，不要停留在 `file:` 开发安装。
 - 更新状态以市场结果为准：`applied` 表示已应用，`restart-required` 等状态需按桌面程序提示处理；不要将下载完成或文件版本一致视为进程已经重载。更新卸载可能关闭正在运行的浏览器窗口，应先结束或确认放弃当前页面现场，不能无感更新活跃对话。
 - 清单文件 [integrity.json](integrity.json) 随仓库与发布包分发。插件加载以及启动新 host 前自动检查发布文件的 SHA-256；缺文件、版本不符、旧 host 混装会明确拒绝运行，要求通过市场完整重装并重载。不会自动关闭现有窗口或覆盖市场正在安装的文件。
 - 无需 `prepare` / `postinstall` 等安装脚本，也不依赖本机源码目录；因此市场安装时禁用额外构建脚本仍可校验本插件。完整性校验用于发现混装，不是签名或来源认证，不能替代市场自己的来源和供应链检查。
@@ -124,7 +130,7 @@ npm pack --dry-run
 # 进入已安装包目录后，独立验证随包清单，不需要开发 checkout
 npm run check:install -- --self --json
 # 仅开发诊断：从 checkout 与指定安装目录比较内容
-npm run check:install -- /absolute/path/to/profile/node_modules/dsh-browser-use --json
+npm run check:install -- /absolute/path/to/profile/node_modules/dsh-parallel-browser --json
 ```
 
 [检查脚本](scripts/check-install.mjs) 只读本机文件，不联网、不安装、不停止进程；退出码 `0` 为一致，`1` 为不一致，`2` 为参数/目录错误。它不检查依赖、用户资料或进程内已加载的代码。硬链接的 inode 可因编辑器原子保存而分离，因此不能只比版本号或只用 `ln -f` 修单个 host。实际修复交给市场整包安装；离线维护也须先停用插件并使用原 profile 的包管理器，勿在线逐文件覆盖。
