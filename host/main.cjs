@@ -19,6 +19,7 @@ const { mkdirSync } = require('node:fs')
 const { isAbsolute } = require('node:path')
 
 // 仅显式指定时改存储位置，且必须早于 ready；平时沿用现有默认资料和登录态。
+// BROWSER_USE_* 是既有配置协议；包改名不改环境变量和默认用户资料目录，保留登录。
 const userDataDir = process.env.BROWSER_USE_USER_DATA_DIR
 if (userDataDir !== undefined) {
   if (!isAbsolute(userDataDir)) throw new Error('BROWSER_USE_USER_DATA_DIR must be an absolute path')
@@ -36,7 +37,7 @@ const HIDE_DOCK = process.env.BROWSER_USE_HIDE_DOCK === '1' && FORCE_DOCK !== tr
 const WINDOWS_TASKBAR = process.platform === 'win32'
 // Windows 用同一个应用标识将本 host 的所有窗口归组；不创建系统托盘图标。
 // 必须在创建任何窗口之前设置，且不修改 app 名称/数据目录，避免影响已有登录。
-if (WINDOWS_TASKBAR) app.setAppUserModelId('laoyingfuhuole.dsh-browser-use')
+if (WINDOWS_TASKBAR) app.setAppUserModelId('laoyingfuhuole.dsh-parallel-browser')
 
 // 宿主只保留一个控制连接；窗口、refs、CDP、就绪状态与队列均按对话隔离。
 let server = null
@@ -102,7 +103,7 @@ function quitHost() {
     session.defaultSession.flushStorageData()
     await session.defaultSession.cookies.flushStore()
   }).catch(error => {
-    console.error(`[dsh-browser-use] session flush failed: ${error.message}`)
+    console.error(`[dsh-parallel-browser] session flush failed: ${error.message}`)
   }).finally(() => app.quit())
 }
 
@@ -115,7 +116,7 @@ function send(message) {
 // 闭包把所有 await 前后的页面操作固定在同一个窗口；没有全局“当前窗口”。
 function createConversation(conversationId) {
   const windowNumber = ++nextWindowNumber
-  const title = `dsh-browser-use #${windowNumber}`
+  const title = `dsh-parallel-browser #${windowNumber}`
   let win = null
   let refs = new Map()
   let documentVersion = 0
@@ -429,7 +430,7 @@ function createConversation(conversationId) {
     return navigateAndWait(() => cdp('Page.navigate', { url }, true), 15_000)
   }
 
-  const CURSOR_ID = '__dsh_browser_use_cursor__'
+  const CURSOR_ID = '__dsh_parallel_browser_cursor__'
 
   // 光标和点击波纹只是页面内的视觉标记，不移动系统指针，也不激活原生窗口。
   // 模板插值发生在主进程；JSON.stringify 把字符串编码成带引号、转义的
@@ -1041,7 +1042,7 @@ async function start() {
   // 专供父进程发现端口；启动/服务错误写 stderr，避免污染协议输出。
   server = createServer(onConnection)
   server.on('error', error => {
-    console.error(`[dsh-browser-use] rpc server error: ${error.message}`)
+    console.error(`[dsh-parallel-browser] rpc server error: ${error.message}`)
     quitHost()
   })
   server.listen(0, '127.0.0.1', () => {
@@ -1057,7 +1058,7 @@ process.on('SIGINT', quitHost)
 
 // 就绪后只创建服务；第一条合法对话操作才创建共享默认 Session 的后台窗口。
 app.whenReady().then(start).catch(error => {
-  console.error(`[dsh-browser-use] host failed: ${error && error.stack ? error.stack : error}`)
+  console.error(`[dsh-parallel-browser] host failed: ${error && error.stack ? error.stack : error}`)
   quitHost()
 })
 app.on('activate', () => {

@@ -1,4 +1,4 @@
-# Start the background browser lazily on the first tool call.
+# dsh-parallel-browser：首次工具调用才启动后台浏览器宿主。
 - insert:
     - id: dsh-parallel-browser
       name: dsh-parallel-browser

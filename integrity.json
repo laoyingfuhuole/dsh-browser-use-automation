@@ -1,19 +1,19 @@
 {
   "schema": 1,
   "name": "dsh-parallel-browser",
-  "version": "0.3.3",
+  "version": "0.3.4",
   "files": {
-    "LICENSE": "e2a71b08decd586efc52012cc42ec91391e371c1d3d1b12982aea4ac3fd7e0e3",
-    "README.md": "9c1fd23e974ec13152515cc23225b1110fc7bcf0a3abee4b76b0d12b42d398a6",
-    "cordis.patch.yml": "c3c7c5efa2f992002b347edecb9e6c920983cbdcfab896e583116f3dd72b4b8d",
-    "host/main.cjs": "d6dd443bef958f60bce46571a24d938b34578c2e4cffba78776859eceeae0aa8",
-    "index.js": "1d4d656f858a7dda593ea5ae93bb48f46ea2f006177e9c04d97b8a023b1ba1b6",
-    "package.json": "27bc68def89ef8962e73378ddf6eb9f72919e71363f31246ca311ebd2d71f247",
+    "LICENSE": "3f0f42c326854f98efc9315094fca168ffe8175b17692c2e526128c57577f270",
+    "README.md": "a5ddef9e1379ff3b905d4d81263fabe27652c2fc7f099e73153589012108604c",
+    "cordis.patch.yml": "57bd212551a7888eecb14f3eb832ef042bd72ac04364b121687aae63d5f20ea0",
+    "host/main.cjs": "36bad9c8aefc0e01ad7a56be276a38693ae2760b0fffb13c28db37e558b78dd2",
+    "index.js": "1bc3f0606e4ff9d412ca8c2d55a7919754b09fabb028413e24d03530e607611c",
+    "package.json": "08ca27fd05f7163e3291639d1faf578c890e54d13ba161f9d56fe4312c90ed0e",
     "scripts/check-install.mjs": "99cfb699f9bb8bcb362eb95a818cc972bd0dca7b6c85dbdf1d3258d2c98383e2",
     "scripts/check-runtime.mjs": "db1210fb8301ce9e7b8c7d3e0292b80069a122f8fefdd0fbfb906c28c5787670",
     "scripts/prepare-release.mjs": "273b063261c501bdfb5be1467c8095d53541f5fad3c7e49edf44f8c065d0ca61",
-    "src/client.js": "e9009a59b97ffe2277b4ad3032f2620f9e752137c7012b591514c41ccac14fba",
+    "src/client.js": "9651b30472e1d22bf1bca540733252e827688bf1afaff330cc6fb6731861b07a",
     "src/integrity.js": "ed27ff06cf916751edd4ad93758b7718246f2b78cba922b8eee62c47d71453b8",
-    "src/tools.js": "a5d55ba7cc5619f8107073f6d0b3a46e44e5c31cc84f11f9c1a6fd7868924941"
+    "src/tools.js": "5c25fe20da949e04884278eb1abcbddf2740cb84002b1ad30c2bc7a67639bbfd"
   }
 }

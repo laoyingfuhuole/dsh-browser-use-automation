@@ -4,15 +4,17 @@
 
 ## 当前版本
 
-`v0.3.3`：修复包名迁移后 bundle patch 仍指向旧模块名（`dsh-browser-use`）导致宿主启动时无法加载的问题；插件行 id 与插件名统一为 `dsh-parallel-browser`，不再与包名分叉。
+`v0.3.4`：完成项目迁移收尾：GitHub 仓库、工作区目录与市场来源统一为 `dsh-parallel-browser`，运行行为与 `v0.3.3` 一致；`browser_use_*` 工具名、环境变量与错误码保持不变。
 
-`v0.3.2`：包名迁移到 npm **`dsh-parallel-browser`**（原 `dsh-browser-use`），安装与更新改走市场 / npm 路线；功能与 `v0.3.1` 一致。
+`v0.3.3`：修正 bundle patch，使插件行 id、插件名和包名 `dsh-parallel-browser` 一致，确保宿主可以正常加载。
+
+`v0.3.2`：包名统一为 npm **`dsh-parallel-browser`**，安装与更新改走市场 / npm 路线；功能与 `v0.3.1` 一致。
 
 `v0.3.1`：修复 Windows 启动前导 CRLF 导致的握手失败，增加只读 Electron 就绪诊断；Windows 点 X 关闭当前对话窗口，最后一个原生窗口关闭后刷新共享存储并退出 host。macOS 保持 X 隐藏、Cmd+Q 退出整个浏览器 host。项目仅保留本篇中文 README。
 
 保留 `v0.3.0` 的按对话独立窗口、共享登录数据、请求取消、显式恢复、过期 ref 与导航失败校验。多轮对话默认保留页面；`browser_use_reset` 必须经过明确确认。
 
-macOS 真实 Electron 回归已覆盖主要路径；Windows 新修复已通过平台模拟测试，仍需用匹配版本、无 shim 的 Electron 在 Windows 实机复验。真实 DSH UI 双对话验收仍待完成。对外使用 `vX.Y.Z` 标签，package.json 使用标准数字版本 `0.3.3`。
+macOS 真实 Electron 回归已覆盖主要路径；Windows 新修复已通过平台模拟测试，仍需用匹配版本、无 shim 的 Electron 在 Windows 实机复验。真实 DSH UI 双对话验收仍待完成。对外使用 `vX.Y.Z` 标签，package.json 使用标准数字版本 `0.3.4`。
 
 ## 功能
 
@@ -51,6 +53,15 @@ macOS 真实 Electron 回归已覆盖主要路径；Windows 新修复已通过�
 - 所有窗口使用同一个 `session.defaultSession`，保留之前的默认数据目录。同源 Cookie、localStorage、IndexedDB 等共享；页面、后退/前进历史和 sessionStorage 各自独立。退出登录或切换账号会影响其他窗口。
 - 共享的是插件的浏览器数据，不是系统 Chrome 的账户、书签或资料。不要启动多个 host 进程同时写同一个数据目录。
 - 默认跨轮次保留窗口、页面和未提交内容，不因一轮回复结束或空闲而回收。仅用户明确要求关闭/恢复时调用 `browser_use_close` 或 `browser_use_reset`；插件卸载、断连或应用退出才结束共享 host。
+
+### 改名与兼容说明
+
+- 当前 npm 包名、插件导出名称、bundle 行 id/name、窗口标题和运行日志统一使用 `dsh-parallel-browser`。安装示例只使用新包名。
+- GitHub 仓库已同步更名为 `laoyingfuhuole/dsh-parallel-browser`，首页、问题反馈和 origin 使用新地址。原仓库地址目前由 GitHub 重定向到新仓库；历史版本记录保留旧包名。本地 checkout 目录名不影响包身份，无需强制移动当前工作区。
+- `browser_use_*` 工具名称、`BROWSER_USE_*` 环境变量及已有错误码是兼容接口，不随包名重命名，避免已有对话、配置和调用方失效。
+- 继续使用原默认浏览器资料目录和 `$DSH_HOME/browser-use/screenshots` 截图目录，不迁移或清空已有登录数据。新截图文件名使用 `dsh-parallel-browser-` 前缀，旧截图仍可读取。
+- 旧包升级到新包时，先确认当前页面任务可结束，再停用/移除旧插件行并安装新包；不要同时加载新旧两份插件，因为它们注册相同的工具名。该迁移不会由插件偷偷修改 profile 或强制关闭正在运行的窗口。
+- 许可证保留旧名称的原始版权声明，并补充新项目名称的声明；不因改名删除已有贡献者署名。
 
 ## 安装
 
@@ -104,7 +115,7 @@ node "/absolute/path/to/profile/node_modules/electron/install.js"
 
 ### 通过 dshmarket 图形界面更新
 
-市场目录可能有多个同名插件；必须核对来源是 **`laoyingfuhuole/dsh-browser-use`**。本项目的 npm 包是 **`dsh-parallel-browser`**，市场会从仓库 `package.json` 自动识别它，并按 npm 版本检查更新。
+在市场中核对 npm 包名 **`dsh-parallel-browser`** 及仓库来源 **`laoyingfuhuole/dsh-parallel-browser`**。包名和仓库名已统一，不要安装其他作者的同名旧包。旧市场条目或历史安装来源可能暂时仍显示旧仓库地址，应以市场实际来源迁移、目录同步和版本检查结果为准。
 
 - 从正确仓库条目安装后，由 dshmarket 的“更新”按钮检查远端版本、选择提交、执行完整安装并管理插件重载。无需额外运行本项目命令行脚本，插件也不自行下载安装、修改 profile 或强制重启。
 - `file:` / `link:` 开发目录与市场在线来源不同，改源码或本地版本号不能让远端出现更新。想使用市场更新，应在确认停止当前任务后，通过市场切换/恢复到正确 GitHub 条目；恢复不可用时按市场提示移除开发安装并重新安装，不要停留在 `file:` 开发安装。

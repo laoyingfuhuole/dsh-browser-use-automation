@@ -6,7 +6,7 @@
  * 每个插件实例共用一个客户端和一个 Electron host，各对话独享窗口和操作队列。
  * 所有窗口共享登录存储；工具不把窗口带到前台，用户通过 Dock 主动查看除外。
  * 构造客户端不启动 Electron，卸载插件才释放全部窗口和共享进程。
- * @module dsh-browser-use
+ * @module dsh-parallel-browser
  */
 
 import { HostClient } from './src/client.js'
@@ -39,7 +39,7 @@ export function apply(ctx, config = {}) {
 
   // 以下是给模型看的使用说明，不是执行脚本；实际工具行为由 registerTools 定义。
   ctx.systemPrompt.section({
-    name: 'tool:browser-use',
+    name: 'tool:dsh-parallel-browser',
     order: 150,
     text: [
       'Use the browser_use_* tools to operate the background browser. The browser is a real',

@@ -84,6 +84,7 @@ function screenshotDirectory(config) {
     return config.screenshotDir
   }
   const home = process.env.DSH_HOME || join(homedir(), '.dsh')
+  // 包名已迁移；保留旧截图目录，避免用户的历史路径和外部引用失效。
   return join(home, 'browser-use', 'screenshots')
 }
 
@@ -100,7 +101,7 @@ export function registerTools(ctx, client, config = {}) {
   const call = (op, payload, exec) => {
     const conversationId = exec?.agent?.id
     if (typeof conversationId !== 'string' || conversationId.trim().length === 0) {
-      throw new TypeError('dsh-browser-use: exec.agent.id must be a non-blank string to route browser tools.')
+      throw new TypeError('dsh-parallel-browser: exec.agent.id must be a non-blank string to route browser tools.')
     }
     return client.call(op, { ...payload, conversationId }, exec.signal)
   }
@@ -112,7 +113,7 @@ export function registerTools(ctx, client, config = {}) {
       // 不能只记录警告后继续，否则插件看似加载成功，实际上却缺少工具。
       // cause 保留原始异常，消息补充工具名；抛错会立即中断后续注册。
       // 不假设 ctx 存在撤销 API：此处不承诺回滚已经成功注册的工具。
-      throw new Error(`dsh-browser-use: could not register ${definition.name} (${String(error)})`, { cause: error })
+      throw new Error(`dsh-parallel-browser: could not register ${definition.name} (${String(error)})`, { cause: error })
     }
   }
 
@@ -238,7 +239,7 @@ export function registerTools(ctx, client, config = {}) {
       // recursive 允许逐层创建目录，已有目录不会因此报错。随机后缀避免并发截图重名；
       // 文件名不包含会话 ID，避免在路径中泄露会话信息。
       mkdirSync(directory, { recursive: true })
-      const path = join(directory, `browser-use-${Date.now()}-${randomUUID()}.jpg`)
+      const path = join(directory, `dsh-parallel-browser-${Date.now()}-${randomUUID()}.jpg`)
       // host 经消息通道传回的是 base64 文本；必须先解码成 Buffer 字节再保存，
       // 不能把 base64 字符串直接写成 .jpg。bytes 是实际二进制大小，不是文本长度。
       // 同步文件写入不接受 AbortSignal；写入失败会抛错，不会返回一个虚假的成功路径。
