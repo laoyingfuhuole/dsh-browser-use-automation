@@ -57,7 +57,7 @@ macOS 真实 Electron 回归已覆盖主要路径；Windows 新修复已通过�
 ### 改名与兼容说明
 
 - 当前 npm 包名、插件导出名称、bundle 行 id/name、窗口标题和运行日志统一使用 `dsh-parallel-browser`。安装示例只使用新包名。
-- GitHub 仓库已同步更名为 `laoyingfuhuole/dsh-parallel-browser`，首页、问题反馈和 origin 使用新地址。原仓库地址目前由 GitHub 重定向到新仓库；历史版本记录保留旧包名。本地 checkout 目录名不影响包身份，无需强制移动当前工作区。
+- GitHub 仓库统一为 `laoyingfuhuole/dsh-parallel-browser`，首页、问题反馈和 origin 使用新地址；本地工程与仓库外测试目录分别统一为 `dsh-parallel-browser` 和 `dsh-parallel-browser-local-tests`。目录移动后需同步开发工具和测试入口的路径，不更改用户资料目录。
 - `browser_use_*` 工具名称、`BROWSER_USE_*` 环境变量及已有错误码是兼容接口，不随包名重命名，避免已有对话、配置和调用方失效。
 - 继续使用原默认浏览器资料目录和 `$DSH_HOME/browser-use/screenshots` 截图目录，不迁移或清空已有登录数据。新截图文件名使用 `dsh-parallel-browser-` 前缀，旧截图仍可读取。
 - 旧包升级到新包时，先确认当前页面任务可结束，再停用/移除旧插件行并安装新包；不要同时加载新旧两份插件，因为它们注册相同的工具名。该迁移不会由插件偷偷修改 profile 或强制关闭正在运行的窗口。
@@ -90,7 +90,7 @@ dsh plugin add dsh-parallel-browser
 }
 ```
 
-重新安装 profile 依赖、重启 DSH，确认 `browser_use_*` 工具出现。[Bundle patch](cordis.patch.yml) 只添加一个插件行；浏览器在首次工具调用时启动。与 DSH 官方 `@deepseek-ai/dsh-browser-use` 注册服务及 Playwright MCP 提供方属于不同实现；只应按各自集成方式选择启用的浏览器后端。
+重新安装 profile 依赖、重启 DSH，确认 `browser_use_*` 工具出现。[Bundle patch](cordis.patch.yml) 只添加一个插件行；浏览器在首次工具调用时启动。本插件与 DSH 官方浏览器后端注册服务及 Playwright MCP 提供方属于不同实现；只应按各自集成方式选择启用的浏览器后端。
 
 Electron 查找顺序：`ELECTRON_PATH` → 本包依赖 → `$DSH_HOME/profiles/*/node_modules/electron/dist`（`DSH_HOME` 默认为 `~/.dsh`）。显式覆盖路径无效时会报错，不悄悄使用其他程序。查找只读取文件，不触发下载；npm 包存在不代表 Electron 二进制已经就绪。
 
