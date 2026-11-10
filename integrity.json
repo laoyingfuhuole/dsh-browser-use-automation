@@ -3,8 +3,8 @@
   "name": "dsh-parallel-browser",
   "version": "0.3.4",
   "files": {
-    "LICENSE": "3f0f42c326854f98efc9315094fca168ffe8175b17692c2e526128c57577f270",
-    "README.md": "a5ddef9e1379ff3b905d4d81263fabe27652c2fc7f099e73153589012108604c",
+    "LICENSE": "808e79b6162ecf82dc98f5823f2fdac5a876ce099ebe388e96a145bc33864e9c",
+    "README.md": "70c854f19c7c73b5d0676ad81358f6b513ea99edc5d7308cae1b626e63c3d9b6",
     "cordis.patch.yml": "57bd212551a7888eecb14f3eb832ef042bd72ac04364b121687aae63d5f20ea0",
     "host/main.cjs": "36bad9c8aefc0e01ad7a56be276a38693ae2760b0fffb13c28db37e558b78dd2",
     "index.js": "1bc3f0606e4ff9d412ca8c2d55a7919754b09fabb028413e24d03530e607611c",
