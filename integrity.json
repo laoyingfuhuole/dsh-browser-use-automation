@@ -1,19 +1,19 @@
 {
   "schema": 1,
-  "name": "dsh-parallel-browser",
-  "version": "0.3.4",
+  "name": "dsh-browser-use-automation",
+  "version": "0.3.5",
   "files": {
     "LICENSE": "808e79b6162ecf82dc98f5823f2fdac5a876ce099ebe388e96a145bc33864e9c",
-    "README.md": "f847637245bba9886da14e553937ba4a4e57261b706332eb108b945e807c75e0",
-    "cordis.patch.yml": "57bd212551a7888eecb14f3eb832ef042bd72ac04364b121687aae63d5f20ea0",
-    "host/main.cjs": "36bad9c8aefc0e01ad7a56be276a38693ae2760b0fffb13c28db37e558b78dd2",
-    "index.js": "1bc3f0606e4ff9d412ca8c2d55a7919754b09fabb028413e24d03530e607611c",
-    "package.json": "08ca27fd05f7163e3291639d1faf578c890e54d13ba161f9d56fe4312c90ed0e",
+    "README.md": "d32ecf63a1fc9a38d369af2471b83f3a870e1e2aa414d1af9cd8c3cb61f491b8",
+    "cordis.patch.yml": "1b0b2bb1154b1a3dd224073400ca85ef54a10a7f0239292aa17c72bb99f5e190",
+    "host/main.cjs": "be58125c7dba8d71d984d716f7408361e06699e3a4dc34cd835f23ed6d544a07",
+    "index.js": "60de25caf0310928350a67f1c24af6a668a7b073784f9bffc2e89e320613fb18",
+    "package.json": "06691b8ab4a3a898dfcf450695a170026e331d1180b7054cf46cad4f8433e50d",
     "scripts/check-install.mjs": "99cfb699f9bb8bcb362eb95a818cc972bd0dca7b6c85dbdf1d3258d2c98383e2",
     "scripts/check-runtime.mjs": "db1210fb8301ce9e7b8c7d3e0292b80069a122f8fefdd0fbfb906c28c5787670",
-    "scripts/prepare-release.mjs": "273b063261c501bdfb5be1467c8095d53541f5fad3c7e49edf44f8c065d0ca61",
-    "src/client.js": "9651b30472e1d22bf1bca540733252e827688bf1afaff330cc6fb6731861b07a",
-    "src/integrity.js": "ed27ff06cf916751edd4ad93758b7718246f2b78cba922b8eee62c47d71453b8",
-    "src/tools.js": "5c25fe20da949e04884278eb1abcbddf2740cb84002b1ad30c2bc7a67639bbfd"
+    "scripts/prepare-release.mjs": "77a73558279b1e81e4f8dd64b4a7c04955f252ff2e0080bdc51b8522514b1508",
+    "src/client.js": "91dd34392af3563596027254c3cf1d2f4307b5a8ac97bf046af26d426193abe6",
+    "src/integrity.js": "35ce80f137a793f85ace14a03debe4a46d228a7f2fd5a273417c290150c1e0d2",
+    "src/tools.js": "3eabc71ffc78eaeb585bb551741d47eeca383fb4e66461e5b922763b0d1926a3"
   }
 }

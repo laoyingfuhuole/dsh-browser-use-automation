@@ -1,7 +1,7 @@
 {
-  "name": "dsh-parallel-browser",
-  "version": "0.3.4",
-  "description": "面向 DeepSeek Harness 的后台浏览器自动化插件：按对话分配独立 Electron 窗口，共享登录状态，支持 CDP 输入和快照 ref，不抢焦点。",
+  "name": "dsh-browser-use-automation",
+  "version": "0.3.5",
+  "description": "面向 DeepSeek Harness 的完全后台浏览器自动化插件：每个对话一个离屏 Electron 窗口，真实 CDP 输入，不抢焦点，支持点击、输入、截图、读页与登录。",
   "type": "module",
   "main": "index.js",
   "exports": {
@@ -40,7 +40,11 @@
     "electron",
     "automation",
     "parallel",
-    "background"
+    "background",
+    "browser-use",
+    "headless-browser",
+    "web-scraping",
+    "screenshot"
   ],
   "license": "MIT",
   "engines": {
@@ -56,10 +60,10 @@
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/laoyingfuhuole/dsh-parallel-browser.git"
+    "url": "git+https://github.com/laoyingfuhuole/dsh-browser-use-automation.git"
   },
-  "homepage": "https://github.com/laoyingfuhuole/dsh-parallel-browser#readme",
+  "homepage": "https://github.com/laoyingfuhuole/dsh-browser-use-automation#readme",
   "bugs": {
-    "url": "https://github.com/laoyingfuhuole/dsh-parallel-browser/issues"
+    "url": "https://github.com/laoyingfuhuole/dsh-browser-use-automation/issues"
   }
 }

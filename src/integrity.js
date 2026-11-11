@@ -15,7 +15,7 @@ let manifestError
 try { loadedManifest = readFileSync(manifestUrl, 'utf8') } catch (error) { manifestError = error }
 
 function invalid(detail) {
-  const error = new Error(`dsh-parallel-browser: installation verification failed (${detail}). Reinstall the complete package from the correct dshmarket repository entry, then reload DSH. Do not patch individual runtime files.`)
+  const error = new Error(`dsh-browser-use-automation: installation verification failed (${detail}). Reinstall the complete package from the correct dshmarket repository entry, then reload DSH. Do not patch individual runtime files.`)
   error.code = 'BROWSER_USE_INSTALLATION_MISMATCH'
   return error
 }
@@ -25,7 +25,7 @@ export function verifyInstallation() {
     if (manifestError) throw manifestError
     if (readFileSync(manifestUrl, 'utf8') !== loadedManifest) throw new Error('package changed after this plugin instance loaded; reload required')
     const manifest = JSON.parse(loadedManifest)
-    if (manifest.schema !== 1 || manifest.name !== 'dsh-parallel-browser'
+    if (manifest.schema !== 1 || manifest.name !== 'dsh-browser-use-automation'
       || typeof manifest.version !== 'string' || !/^\d+\.\d+\.\d+$/.test(manifest.version)
       || !manifest.files || typeof manifest.files !== 'object' || Array.isArray(manifest.files)) {
       throw new Error('invalid integrity manifest')

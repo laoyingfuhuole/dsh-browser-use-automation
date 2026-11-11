@@ -1,8 +1,10 @@
-# dsh-parallel-browser
+# dsh-browser-use-automation
 
 面向 [DeepSeek Harness](https://github.com/deepseek-ai) 的后台浏览器自动化插件。一个 Electron host 为不同对话分配独立编号的离屏窗口，使用 CDP 输入和快照 ref，不抢焦点；各窗口共享登录状态与持久化站点数据。
 
 ## 当前版本
+
+`v0.3.5`：包名、GitHub 仓库与市场来源统一为 **`dsh-browser-use-automation`**（旧名 `dsh-parallel-browser` 已停用）；运行行为与 `v0.3.4` 一致，`browser_use_*` 工具名、环境变量与错误码保持不变。
 
 `v0.3.4`：完成项目迁移收尾：GitHub 仓库、工作区目录与市场来源统一为 `dsh-parallel-browser`，运行行为与 `v0.3.3` 一致；`browser_use_*` 工具名、环境变量与错误码保持不变。
 
@@ -56,10 +58,10 @@ macOS 真实 Electron 回归已覆盖主要路径；Windows 新修复已通过�
 
 ### 改名与兼容说明
 
-- 当前 npm 包名、插件导出名称、bundle 行 id/name、窗口标题和运行日志统一使用 `dsh-parallel-browser`。安装示例只使用新包名。
-- GitHub 仓库统一为 `laoyingfuhuole/dsh-parallel-browser`，首页、问题反馈和 origin 使用新地址；本地工程与仓库外测试目录分别统一为 `dsh-parallel-browser` 和 `dsh-parallel-browser-local-tests`。目录移动后需同步开发工具和测试入口的路径，不更改用户资料目录。
+- 当前 npm 包名、插件导出名称、bundle 行 id/name、窗口标题和运行日志统一使用 `dsh-browser-use-automation`。安装示例只使用新包名。
+- GitHub 仓库统一为 `laoyingfuhuole/dsh-browser-use-automation`，首页、问题反馈和 origin 使用新地址。此前使用过的 `dsh-parallel-browser` 与更早的 `dsh-browser-use` 均已停用，旧地址不再维护。
 - `browser_use_*` 工具名称、`BROWSER_USE_*` 环境变量及已有错误码是兼容接口，不随包名重命名，避免已有对话、配置和调用方失效。
-- 继续使用原默认浏览器资料目录和 `$DSH_HOME/browser-use/screenshots` 截图目录，不迁移或清空已有登录数据。新截图文件名使用 `dsh-parallel-browser-` 前缀，旧截图仍可读取。
+- 继续使用原默认浏览器资料目录和 `$DSH_HOME/browser-use/screenshots` 截图目录，不迁移或清空已有登录数据。新截图文件名使用 `dsh-browser-use-automation-` 前缀，旧截图仍可读取。
 - 旧包升级到新包时，先确认当前页面任务可结束，再停用/移除旧插件行并安装新包；不要同时加载新旧两份插件，因为它们注册相同的工具名。该迁移不会由插件偷偷修改 profile 或强制关闭正在运行的窗口。
 
 ## 安装
@@ -69,7 +71,7 @@ macOS 真实 Electron 回归已覆盖主要路径；Windows 新修复已通过�
 推荐从插件市场安装，或直接执行：
 
 ```bash
-dsh plugin add dsh-parallel-browser
+dsh plugin add dsh-browser-use-automation
 ```
 
 首次工具调用时才启动浏览器；Electron 依赖随包声明，由 DSH profile 的包管理器负责安装。
@@ -80,11 +82,11 @@ dsh plugin add dsh-parallel-browser
 // ~/.dsh/profiles/<profile>/package.json
 {
   "dependencies": {
-    "dsh-parallel-browser": "file:/absolute/path/to/dsh-parallel-browser"
+    "dsh-browser-use-automation": "file:/absolute/path/to/dsh-browser-use-automation"
   },
   "dsh": {
     "profile": {
-      "bundles": ["dsh-parallel-browser"]
+      "bundles": ["dsh-browser-use-automation"]
     }
   }
 }
@@ -114,7 +116,7 @@ node "/absolute/path/to/profile/node_modules/electron/install.js"
 
 ### 通过 dshmarket 图形界面更新
 
-在市场中核对 npm 包名 **`dsh-parallel-browser`** 及仓库来源 **`laoyingfuhuole/dsh-parallel-browser`**。包名和仓库名已统一，不要安装其他作者的同名旧包。旧市场条目或历史安装来源可能暂时仍显示旧仓库地址，应以市场实际来源迁移、目录同步和版本检查结果为准。
+在市场中核对 npm 包名 **`dsh-browser-use-automation`** 及仓库来源 **`laoyingfuhuole/dsh-browser-use-automation`**。包名和仓库名已统一，不要安装其他作者的同名包。旧市场条目或历史安装来源可能暂时仍显示旧仓库地址，应以市场实际来源迁移、目录同步和版本检查结果为准。
 
 - 从正确仓库条目安装后，由 dshmarket 的“更新”按钮检查远端版本、选择提交、执行完整安装并管理插件重载。无需额外运行本项目命令行脚本，插件也不自行下载安装、修改 profile 或强制重启。
 - `file:` / `link:` 开发目录与市场在线来源不同，改源码或本地版本号不能让远端出现更新。想使用市场更新，应在确认停止当前任务后，通过市场切换/恢复到正确 GitHub 条目；恢复不可用时按市场提示移除开发安装并重新安装，不要停留在 `file:` 开发安装。
@@ -142,7 +144,7 @@ npm pack --dry-run
 # 进入已安装包目录后，独立验证随包清单，不需要开发 checkout
 npm run check:install -- --self --json
 # 仅开发诊断：从 checkout 与指定安装目录比较内容
-npm run check:install -- /absolute/path/to/profile/node_modules/dsh-parallel-browser --json
+npm run check:install -- /absolute/path/to/profile/node_modules/dsh-browser-use-automation --json
 ```
 
 [检查脚本](scripts/check-install.mjs) 只读本机文件，不联网、不安装、不停止进程；退出码 `0` 为一致，`1` 为不一致，`2` 为参数/目录错误。它不检查依赖、用户资料或进程内已加载的代码。硬链接的 inode 可因编辑器原子保存而分离，因此不能只比版本号或只用 `ln -f` 修单个 host。实际修复交给市场整包安装；离线维护也须先停用插件并使用原 profile 的包管理器，勿在线逐文件覆盖。

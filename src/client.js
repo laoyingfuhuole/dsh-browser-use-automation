@@ -81,10 +81,10 @@ export function resolveElectronPath() {
   const runtime = inspectElectronRuntime()
   if (runtime.status === 'ready') return runtime.path
   const error = new Error(runtime.status === 'invalid-override'
-    ? 'dsh-parallel-browser: ELECTRON_PATH must point to a runnable bare Electron file, not a directory or missing path. Correct or unset the override, then run npm run check:runtime.'
+    ? 'dsh-browser-use-automation: ELECTRON_PATH must point to a runnable bare Electron file, not a directory or missing path. Correct or unset the override, then run npm run check:runtime.'
     : runtime.status === 'binary-missing'
-      ? 'dsh-parallel-browser: Electron npm package exists but its executable is missing or not runnable (dist/path.txt). Run npm run check:runtime for the exact package path and approved repair steps; re-installing an already present npm package alone may not download its binary.'
-      : 'dsh-parallel-browser: no Electron package or executable found. Install the declared Electron dependency using this DSH profile’s package manager, or set ELECTRON_PATH to a runnable bare Electron executable. Run npm run check:runtime for details.')
+      ? 'dsh-browser-use-automation: Electron npm package exists but its executable is missing or not runnable (dist/path.txt). Run npm run check:runtime for the exact package path and approved repair steps; re-installing an already present npm package alone may not download its binary.'
+      : 'dsh-browser-use-automation: no Electron package or executable found. Install the declared Electron dependency using this DSH profile’s package manager, or set ELECTRON_PATH to a runnable bare Electron executable. Run npm run check:runtime for details.')
   error.code = runtime.status === 'invalid-override' ? 'BROWSER_USE_ELECTRON_PATH_INVALID'
     : runtime.status === 'binary-missing' ? 'BROWSER_USE_ELECTRON_BINARY_MISSING' : 'BROWSER_USE_ELECTRON_PACKAGE_MISSING'
   error.runtime = runtime
