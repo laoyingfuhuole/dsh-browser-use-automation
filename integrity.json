@@ -4,7 +4,7 @@
   "version": "0.3.5",
   "files": {
     "LICENSE": "808e79b6162ecf82dc98f5823f2fdac5a876ce099ebe388e96a145bc33864e9c",
-    "README.md": "d32ecf63a1fc9a38d369af2471b83f3a870e1e2aa414d1af9cd8c3cb61f491b8",
+    "README.md": "f422f43dbd92262dd4817ff40f0b4f70ce5c135b35148e65ead49c6b6080156f",
     "cordis.patch.yml": "1b0b2bb1154b1a3dd224073400ca85ef54a10a7f0239292aa17c72bb99f5e190",
     "host/main.cjs": "be58125c7dba8d71d984d716f7408361e06699e3a4dc34cd835f23ed6d544a07",
     "index.js": "60de25caf0310928350a67f1c24af6a668a7b073784f9bffc2e89e320613fb18",
