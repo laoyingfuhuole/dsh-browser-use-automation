@@ -170,6 +170,101 @@ export function registerTools(ctx, client, config = {}) {
   }))
 
   register(defineTool({
+    name: 'browser_use_hover',
+    description: 'Move the page pointer to the centre of an element from this conversation’s latest snapshot, without clicking or focusing the native window. Validates the ref, scrolls the target into view and checks visibility/occlusion. Reports mouse-move dispatch only, not that a menu or tooltip appeared. Use browser_use_wait and take a new snapshot to inspect revealed controls. No automatic wait, click or ref refresh; site hover handlers may still have effects.',
+    parameters: {
+      ref: { type: 'number', required: true, description: 'Ref from this conversation’s latest browser_use_snapshot.' },
+    },
+    output: {
+      schema: {
+        type: 'object',
+        additionalProperties: false,
+        properties: {
+          dispatched: { type: 'boolean', required: true },
+          ref: { type: 'number', required: true },
+          x: { type: 'number', required: true },
+          y: { type: 'number', required: true },
+        },
+      },
+      render: (_args, value) => [{
+        type: 'text',
+        text: `Pointer moved to [${value.ref}] at (${value.x}, ${value.y}) without clicking. Dispatch only: inspect the page to confirm a menu or tooltip appeared, then take a new snapshot for revealed controls.`,
+      }],
+    },
+    timeoutMs: 30_000,
+    isConcurrencySafe: () => false,
+    async execute(args, exec) {
+      return call('hover', { ref: args.ref }, exec)
+    },
+  }))
+
+  register(defineTool({
+    name: 'browser_use_scroll',
+    description: 'Dispatch a real CDP mouse-wheel event in this conversation’s background page. Positive deltaY scrolls down; negative scrolls up. Default is 600 CSS pixels at the viewport centre. Coordinates are viewport CSS pixels; this does not read the page or claim that lazy-loaded content has finished updating. Use browser_use_read or browser_use_wait to inspect the result.',
+    parameters: {
+      deltaY: { type: 'number', description: 'Optional vertical wheel movement, integer from -10000 to 10000. Defaults to 600.' },
+      deltaX: { type: 'number', description: 'Optional horizontal wheel movement, integer from -10000 to 10000. Defaults to 0.' },
+      x: { type: 'number', description: 'Optional page CSS-viewport x coordinate, integer from zero to one pixel below the viewport width. Defaults to the viewport centre.' },
+      y: { type: 'number', description: 'Optional page CSS-viewport y coordinate, integer from zero to one pixel below the viewport height. Defaults to the viewport centre.' },
+    },
+    output: {
+      schema: {
+        type: 'object',
+        additionalProperties: false,
+        properties: {
+          dispatched: { type: 'boolean', required: true },
+          x: { type: 'number', required: true },
+          y: { type: 'number', required: true },
+          deltaX: { type: 'number', required: true },
+          deltaY: { type: 'number', required: true },
+        },
+      },
+      render: (_args, value) => [{
+        type: 'text',
+        text: `Wheel event sent at (${value.x}, ${value.y}): deltaX=${value.deltaX}, deltaY=${value.deltaY}. This confirms dispatch only, not that the page finished scrolling.`,
+      }],
+    },
+    timeoutMs: 30_000,
+    isConcurrencySafe: () => false,
+    async execute(args, exec) {
+      return call('scroll', {
+        ...args.deltaY !== undefined ? { deltaY: args.deltaY } : {},
+        ...args.deltaX !== undefined ? { deltaX: args.deltaX } : {},
+        ...args.x !== undefined ? { x: args.x } : {},
+        ...args.y !== undefined ? { y: args.y } : {},
+      }, exec)
+    },
+  }))
+
+  register(defineTool({
+    name: 'browser_use_key',
+    description: 'Press one supported key or modifier chord in this conversation’s background page using CDP keyboard events. Supported keys: Enter, Tab, Escape, Backspace, Delete, Insert, Home, End, PageUp, PageDown, ArrowUp/Down/Left/Right, Space, F1-F12. Modifiers: Control/Ctrl, Alt, Shift, Meta/Cmd/Command, or Mod (Command on macOS, Control elsewhere). Example: Enter or Mod+ArrowLeft. It attempts to release every dispatched key, including after cancellation, and reports release errors. Enter can submit forms; shortcuts may trigger browser/page actions. This does not type text or inspect the clipboard.',
+    parameters: {
+      key: { type: 'string', required: true, description: 'A supported key name, optionally prefixed by modifier names joined with +, e.g. Enter, Shift+Tab, Mod+ArrowLeft.' },
+    },
+    output: {
+      schema: {
+        type: 'object',
+        additionalProperties: false,
+        properties: {
+          pressed: { type: 'string', required: true },
+          key: { type: 'string', required: true },
+          modifiers: { type: 'array', required: true, items: { type: 'string' } },
+        },
+      },
+      render: (_args, value) => [{
+        type: 'text',
+        text: `Key event sent: ${value.modifiers.length ? `${value.modifiers.join('+')}+` : ''}${value.key}. This confirms dispatch only, not that the page completed the action.`,
+      }],
+    },
+    timeoutMs: 30_000,
+    isConcurrencySafe: () => false,
+    async execute(args, exec) {
+      return call('key', { key: args.key }, exec)
+    },
+  }))
+
+  register(defineTool({
     name: 'browser_use_type',
     description: 'Focus the element with the given ref and insert text with CDP Input.insertText. Use this for search boxes and forms; React/Vue controlled inputs receive a real input event.',
     parameters: {
@@ -384,6 +479,41 @@ export function registerTools(ctx, client, config = {}) {
     isConcurrencySafe: () => true,
     async execute(_args, exec) {
       return call('state', {}, exec)
+    },
+  }))
+
+  register(defineTool({
+    name: 'browser_use_read',
+    description: 'Read rendered text from this conversation’s top-level page or the first matching CSS region, without changing snapshot refs. Includes off-viewport rendered text, not just the screen. This is plain page text, not article extraction; no iframe, shadow-root traversal, canvas or OCR. Hidden roots return empty text. Default 6000 UTF-16 code units, maximum 24000; truncation is explicit and never splits a surrogate pair.',
+    parameters: {
+      selector: { type: 'string', description: 'Optional CSS selector for the first HTML region to read; defaults to body.' },
+      maxChars: { type: 'number', description: 'Integer output budget in UTF-16 code units, from 1 to 24000 (default 6000).' },
+    },
+    output: {
+      schema: {
+        type: 'object',
+        additionalProperties: false,
+        properties: {
+          url: { type: 'string', required: true },
+          title: { type: 'string', required: true },
+          text: { type: 'string', required: true },
+          totalChars: { type: 'number', required: true },
+          returnedChars: { type: 'number', required: true },
+          truncated: { type: 'boolean', required: true },
+        },
+      },
+      render: (_args, value) => [{
+        type: 'text',
+        text: `URL: ${value.url}\nTitle: ${value.title}\nScope: top-level rendered text only; no frame traversal, OCR or article filtering.\nCharacters (UTF-16): ${value.returnedChars}/${value.totalChars}${value.truncated ? ' (truncated; select a narrower region or increase maxChars up to 24000)' : ''}\n\n${value.text || '(no rendered text in the selected region)'}`,
+      }],
+    },
+    timeoutMs: 30_000,
+    isConcurrencySafe: () => true,
+    async execute(args, exec) {
+      return call('read', {
+        ...args.selector !== undefined ? { selector: args.selector } : {},
+        ...args.maxChars !== undefined ? { maxChars: args.maxChars } : {},
+      }, exec)
     },
   }))
 

@@ -73,8 +73,8 @@ function cancelRequest(job, error) {
   // 真正卡住时由用户明确选择 reset/close 销毁本窗口，不自动丢失多轮现场。
 }
 const operations = new Set([
-  'navigate', 'snapshot', 'click', 'type', 'insertText', 'screenshot', 'eval',
-  'wait', 'state', 'windowShow', 'windowHide', 'windowState', 'back', 'reload', 'close', 'reset',
+  'navigate', 'snapshot', 'click', 'hover', 'type', 'insertText', 'scroll', 'key', 'screenshot', 'eval',
+  'wait', 'state', 'read', 'windowShow', 'windowHide', 'windowState', 'back', 'reload', 'close', 'reset',
 ])
 
 function updateDockMenu() {
@@ -517,6 +517,14 @@ function createConversation(conversationId) {
     return point
   }
 
+  async function hover(ref) {
+    let target = await resolveTarget(ref)
+    await showCursor(target.x, target.y, 'hover')
+    target = await resolveTarget(ref)
+    await cdp('Input.dispatchMouseEvent', { type: 'mouseMoved', x: target.x, y: target.y })
+    return { dispatched: true, ref, x: target.x, y: target.y }
+  }
+
   async function click(ref) {
     let target = await resolveTarget(ref)
     await showCursor(target.x, target.y, 'click')
@@ -535,6 +543,143 @@ function createConversation(conversationId) {
     await showRipple(target.x, target.y)
     await delay(160)
     return { clicked: true, ref, x: Math.round(target.x), y: Math.round(target.y) }
+  }
+
+  async function scroll(message) {
+    const deltaX = message.deltaX === undefined ? 0 : message.deltaX
+    const deltaY = message.deltaY === undefined ? 600 : message.deltaY
+    if (!Number.isInteger(deltaX) || Math.abs(deltaX) > 10_000
+      || !Number.isInteger(deltaY) || Math.abs(deltaY) > 10_000
+      || (deltaX === 0 && deltaY === 0)) {
+      throw new TypeError('scroll deltaX/deltaY must be integers within +/-10000 and cannot both be zero')
+    }
+    const metrics = await cdp('Page.getLayoutMetrics')
+    const width = metrics.cssVisualViewport?.clientWidth
+    const height = metrics.cssVisualViewport?.clientHeight
+    if (!Number.isFinite(width) || width <= 0 || !Number.isFinite(height) || height <= 0) {
+      throw new Error('scroll could not determine the page CSS viewport dimensions')
+    }
+    const x = message.x === undefined ? Math.floor(width / 2) : message.x
+    const y = message.y === undefined ? Math.floor(height / 2) : message.y
+    if (!Number.isInteger(x) || x < 0 || x >= width || !Number.isInteger(y) || y < 0 || y >= height) {
+      throw new TypeError(`scroll x/y must be integer CSS viewport coordinates (0 <= x < ${width}, 0 <= y < ${height})`)
+    }
+    await cdp('Input.dispatchMouseEvent', {
+      type: 'mouseWheel', x, y, deltaX, deltaY,
+    })
+    return { dispatched: true, x, y, deltaX, deltaY }
+  }
+
+  const KEY_DEFINITIONS = {
+    Enter: { key: 'Enter', code: 'Enter', keyCode: 13 },
+    Tab: { key: 'Tab', code: 'Tab', keyCode: 9 },
+    Escape: { key: 'Escape', code: 'Escape', keyCode: 27 },
+    Backspace: { key: 'Backspace', code: 'Backspace', keyCode: 8 },
+    Delete: { key: 'Delete', code: 'Delete', keyCode: 46 },
+    Insert: { key: 'Insert', code: 'Insert', keyCode: 45 },
+    Home: { key: 'Home', code: 'Home', keyCode: 36 },
+    End: { key: 'End', code: 'End', keyCode: 35 },
+    PageUp: { key: 'PageUp', code: 'PageUp', keyCode: 33 },
+    PageDown: { key: 'PageDown', code: 'PageDown', keyCode: 34 },
+    ArrowUp: { key: 'ArrowUp', code: 'ArrowUp', keyCode: 38 },
+    ArrowDown: { key: 'ArrowDown', code: 'ArrowDown', keyCode: 40 },
+    ArrowLeft: { key: 'ArrowLeft', code: 'ArrowLeft', keyCode: 37 },
+    ArrowRight: { key: 'ArrowRight', code: 'ArrowRight', keyCode: 39 },
+    Space: { key: ' ', code: 'Space', keyCode: 32 },
+    ...Object.fromEntries(Array.from({ length: 12 }, (_, index) => {
+      const number = index + 1
+      return [`F${number}`, { key: `F${number}`, code: `F${number}`, keyCode: 111 + number }]
+    })),
+  }
+  const MODIFIER_DEFINITIONS = {
+    Control: { key: 'Control', code: 'ControlLeft', keyCode: 17, bit: 2 },
+    Alt: { key: 'Alt', code: 'AltLeft', keyCode: 18, bit: 1 },
+    Shift: { key: 'Shift', code: 'ShiftLeft', keyCode: 16, bit: 8 },
+    Meta: { key: 'Meta', code: 'MetaLeft', keyCode: 91, bit: 4 },
+  }
+
+  function parseKeyChord(input) {
+    if (typeof input !== 'string' || input.trim() === '') throw new TypeError('key must be a non-empty supported key name or chord')
+    const parts = input.split('+').map(part => part.trim())
+    if (parts.some(part => part === '')) throw new TypeError('key chord contains an empty component')
+    const modifiers = []
+    for (const part of parts.slice(0, -1)) {
+      let name = part
+      if (name === 'Ctrl') name = 'Control'
+      if (name === 'Cmd' || name === 'Command') name = 'Meta'
+      if (name === 'Mod') name = process.platform === 'darwin' ? 'Meta' : 'Control'
+      const definition = MODIFIER_DEFINITIONS[name]
+      if (!definition || modifiers.some(modifier => modifier.name === name)) {
+        throw new TypeError(`unsupported or repeated key modifier: ${part}`)
+      }
+      modifiers.push({ name, ...definition })
+    }
+    const key = parts.at(-1)
+    if (MODIFIER_DEFINITIONS[key] || ['Ctrl', 'Cmd', 'Command', 'Mod'].includes(key)) {
+      throw new TypeError('key chord must end with a non-modifier key')
+    }
+    const definition = KEY_DEFINITIONS[key]
+    if (!definition) throw new TypeError(`unsupported key: ${key}`)
+    return { modifiers, key: definition }
+  }
+
+  async function pressKeyChord(input) {
+    const { modifiers, key } = parseKeyChord(input)
+    let modifierMask = 0
+    const release = []
+    let operationError
+    try {
+      for (const modifier of modifiers) {
+        assertOperation()
+        modifierMask |= modifier.bit
+        const params = {
+          type: 'keyDown', key: modifier.key, code: modifier.code,
+          windowsVirtualKeyCode: modifier.keyCode, nativeVirtualKeyCode: modifier.keyCode,
+          modifiers: modifierMask,
+        }
+        const keyUp = { ...params, type: 'keyUp' }
+        await whileLive(() => {
+          assertOperation()
+          release.unshift({ params: keyUp, modifierBit: modifier.bit })
+          const command = win.webContents.debugger.sendCommand('Input.dispatchKeyEvent', params)
+          return command
+        })
+        assertOperation()
+      }
+      assertOperation()
+      const params = {
+        type: 'keyDown', key: key.key, code: key.code,
+        windowsVirtualKeyCode: key.keyCode, nativeVirtualKeyCode: key.keyCode,
+        modifiers: modifierMask,
+      }
+      await whileLive(() => {
+        assertOperation()
+        release.unshift({ params: { ...params, type: 'keyUp', modifiers: modifierMask }, modifierBit: 0 })
+        const command = win.webContents.debugger.sendCommand('Input.dispatchKeyEvent', params)
+        return command
+      })
+      assertOperation()
+    } catch (error) {
+      operationError = error
+    }
+    const releaseErrors = []
+    let releaseMask = modifierMask
+    for (const item of release) {
+      if (item.modifierBit) releaseMask &= ~item.modifierBit
+      try {
+        await whileLive(() => win.webContents.debugger.sendCommand('Input.dispatchKeyEvent', {
+          ...item.params, modifiers: releaseMask,
+        }))
+      } catch (error) {
+        releaseErrors.push(error)
+      }
+    }
+    if (operationError && releaseErrors.length > 0) {
+      throw new Error(`${operationError.message}; additionally failed to release ${releaseErrors.length} key(s)`, { cause: operationError })
+    }
+    if (operationError) throw operationError
+    if (releaseErrors.length > 0) throw new Error(`failed to release ${releaseErrors.length} key(s): ${releaseErrors[0].message}`)
+    return { pressed: input, key: key.key, modifiers: modifiers.map(modifier => modifier.name) }
   }
 
   // focus 仅改变页面内的输入位置，绝不激活原生窗口。每次插入前确认焦点仍在原元素，
@@ -604,6 +749,40 @@ function createConversation(conversationId) {
     }))()`)
   }
 
+  async function readText(message) {
+    const maxChars = message.maxChars === undefined ? 6000 : message.maxChars
+    if (!Number.isInteger(maxChars) || maxChars < 1 || maxChars > 24000) {
+      throw new TypeError('read maxChars must be an integer between 1 and 24000')
+    }
+    const selector = message.selector === undefined ? '' : message.selector
+    if (typeof selector !== 'string' || (message.selector !== undefined && selector.trim() === '')) {
+      throw new TypeError('read selector must be a non-empty CSS selector when provided')
+    }
+    const version = documentVersion
+    const result = await evaluate(`(() => {
+      const selector = ${JSON.stringify(selector)}
+      const root = selector ? document.querySelector(selector) : document.body
+      if (!root) throw new Error(selector ? 'read selector did not match an element' : 'page has no body to read')
+      if (!(root instanceof HTMLElement)) throw new Error('read target must be an HTML element')
+      const style = getComputedStyle(root)
+      const rendered = root.getClientRects().length > 0 && style.display !== 'none'
+        && style.visibility === 'visible' && Number(style.opacity) !== 0
+        && !root.closest('[hidden]')
+      // innerText on an unrendered root can fall back to textContent and expose hidden text.
+      const text = rendered ? root.innerText : ''
+      const limit = ${maxChars}
+      let end = Math.min(text.length, limit)
+      if (end > 0 && end < text.length
+        && /[\\uD800-\\uDBFF]/.test(text[end - 1]) && /[\\uDC00-\\uDFFF]/.test(text[end])) end--
+      return {
+        url: location.href, title: document.title, text: text.slice(0, end),
+        totalChars: text.length, returnedChars: end, truncated: end < text.length,
+      }
+    })()`)
+    if (version !== documentVersion) throw new Error('page changed during read; read again')
+    return result
+  }
+
   async function dispatch(message) {
     assertLive()
     // 用户离开人工查看窗口后，先恢复后台契约，再处理请求。普通页面操作
@@ -618,11 +797,17 @@ function createConversation(conversationId) {
         return snapshot()
       case 'click':
         return click(message.ref)
+      case 'hover':
+        return hover(message.ref)
       case 'type':
         return type(message.ref, String(message.text ?? ''))
       case 'insertText':
         await cdp('Input.insertText', { text: String(message.text ?? '') })
         return { typed: String(message.text ?? '').length }
+      case 'scroll':
+        return scroll(message)
+      case 'key':
+        return pressKeyChord(message.key)
       case 'screenshot':
         return screenshot()
       case 'eval': {
@@ -639,6 +824,8 @@ function createConversation(conversationId) {
         return waitFor(message)
       case 'state':
         return pageState()
+      case 'read':
+        return readText(message)
       case 'windowShow':
         return revealWindow()
       case 'windowHide':

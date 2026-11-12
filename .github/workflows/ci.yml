@@ -1,0 +1,49 @@
+name: Tests and package checks
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: ${{ matrix.os }} / Node ${{ matrix.node }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+        node: ['22.19.0', '24']
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+      - name: Parse JavaScript sources and test fixtures
+        run: npm run check:syntax
+      - name: Run isolated regression tests
+        run: npm test
+      - name: Verify committed release manifest
+        run: npm run check:release
+      - name: Verify installation self-check
+        run: npm run check:install -- --self --json
+
+  package:
+    name: Package contents
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - name: Inspect npm package without install scripts
+        run: npm pack --dry-run --ignore-scripts
