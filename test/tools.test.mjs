@@ -76,6 +76,16 @@ test('read forwards its scope and budget, renders text and exposes truncation an
   assert.equal(h.calls[1].payload.selector, undefined)
 })
 
+test('read forwards opaque cursors and renders continuation guidance', async t => {
+  const h = await fixture(t)
+  h.register()
+  const tool = h.definitions.get('browser_use_read')
+  h.client.result = { url: 'https://example.test/', title: 'Article', text: 'next', totalChars: 20, returnedChars: 4, truncated: true, hasMore: true, nextCursor: 'opaque' }
+  const result = await tool.execute({ cursor: 'previous', maxChars: 4 }, h.exec)
+  assert.equal(h.calls[0].payload.cursor, 'previous')
+  assert.match(tool.output.render({}, result)[0].text, /more available; call browser_use_read with nextCursor/)
+})
+
 test('hover forwards only its ref and trusted routing and reports dispatch rather than menu success', async t => {
   const h = await fixture(t)
   h.register()
@@ -144,6 +154,18 @@ test('assertions report false values and page exceptions as failure', async t =>
   const result = await tool.execute({ selector: '[' }, h.exec)
   assert.equal(result.pass, false)
   assert.equal(result.detail, 'invalid selector')
+})
+
+test('eval render distinguishes host truncation, display shortening and assert-sized results', async t => {
+  const h = await fixture(t)
+  h.register()
+  const tool = h.definitions.get('browser_use_eval')
+  const truncated = tool.output.render({}, { ok: true, value: 'x', truncated: true })[0].text
+  assert.match(truncated, /Result truncated by the browser host/)
+  const display = tool.output.render({}, { ok: true, value: 'x'.repeat(50_001), truncated: false })[0].text
+  assert.match(display, /Display shortened to 50,000 characters/)
+  const complete = tool.output.render({}, { ok: true, value: 'true', truncated: false })[0].text
+  assert.doesNotMatch(complete, /truncated|shortened/)
 })
 
 test('registration errors include the tool name and stop subsequent registration', async t => {

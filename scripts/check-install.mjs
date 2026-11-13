@@ -112,7 +112,7 @@ try {
     const { verifyInstallation } = await import('../src/integrity.js')
     const verified = verifyInstallation()
     if (jsonOutput) console.log(JSON.stringify({ ok: true, mode: 'installed-manifest', ...verified }, null, 2))
-    else console.log(`PASS: v${verified.version}, ${verified.filesChecked} installed package files match integrity.json. Running-process version is not checked.`)
+    else console.log(`PASS: v${verified.version}, ${verified.filesChecked} runtime files match integrity.json (${verified.manifestFiles} manifest files declared). Full package consistency is checked by npm run check:release. Running-process version is not checked.`)
   } else {
     const paths = args.filter(arg => arg !== '--json')
     if (paths.length !== 1 || paths[0].startsWith('--') || args.filter(arg => arg === '--json').length > 1) {

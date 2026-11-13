@@ -1,6 +1,6 @@
 {
   "name": "dsh-browser-use-automation",
-  "version": "0.4.0",
+  "version": "0.4.1",
   "description": "面向 DeepSeek Harness 的完全后台浏览器自动化插件：每个对话一个离屏 Electron 窗口，真实 CDP 输入，不抢焦点，支持点击、输入、截图、读页与登录。",
   "type": "module",
   "main": "index.js",

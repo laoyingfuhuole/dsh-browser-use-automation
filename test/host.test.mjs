@@ -25,6 +25,76 @@ test('read returns bounded body text with explicit truncation and preserves clic
   assert.equal(h.response(id).ok, true)
 })
 
+test('read continues long text with an opaque cursor and reconstructs it exactly', async t => {
+  const h = await createHostHarness(t)
+  await h.run('state')
+  const text = `${'甲'.repeat(5995)}\n${'乙'.repeat(5995)}\n${'丙'.repeat(5995)}\n${'丁'.repeat(5995)}`
+  h.natives[0].page.document.body.innerText = text
+  const pages = []
+  let cursor
+  for (;;) {
+    const result = (await h.run('read', 'A', { cursor })).result
+    pages.push(result)
+    cursor = result.nextCursor
+    if (!cursor) break
+  }
+  assert.equal(pages.length, 4)
+  assert.equal(pages.map(page => page.text).join(''), text)
+  assert.equal(pages.at(-1).hasMore, false)
+  assert.equal(pages[0].hasMore, true)
+  assert.equal(typeof pages[0].nextCursor, 'string')
+})
+
+test('read cursors become stale after navigation or selector changes', async t => {
+  const h = await createHostHarness(t)
+  await h.run('state')
+  h.natives[0].page.document.body.innerText = 'first page content'
+  const first = (await h.run('read', 'A', { maxChars: 5 })).result
+  h.natives[0].webContents.emit('did-start-navigation', { isMainFrame: true })
+  assert.match((await h.run('read', 'A', { cursor: first.nextCursor })).error, /stale read cursor/)
+  const fresh = (await h.run('read', 'A', { maxChars: 5 })).result
+  assert.match((await h.run('read', 'A', { selector: 'main', cursor: fresh.nextCursor })).error, /stale read cursor/)
+})
+
+test('read cursor rejects same-length dynamic text changes between pages', async t => {
+  const h = await createHostHarness(t)
+  await h.run('state')
+  const body = h.natives[0].page.document.body
+  body.innerText = 'A'.repeat(12000)
+  const first = (await h.run('read', 'A', { maxChars: 6000 })).result
+  body.innerText = 'B'.repeat(12000)
+  assert.match((await h.run('read', 'A', { cursor: first.nextCursor })).error, /page content changed/)
+})
+
+test('read cursor preserves surrogate pairs at page boundaries', async t => {
+  const h = await createHostHarness(t)
+  await h.run('state')
+  h.natives[0].page.document.body.innerText = `${'A'.repeat(5999)}😀B`
+  const first = (await h.run('read', 'A', { maxChars: 6000 })).result
+  assert.equal(first.returnedChars, 5999)
+  assert.equal(first.text.endsWith('😀'), false)
+  assert.equal(first.hasMore, true)
+  const second = (await h.run('read', 'A', { cursor: first.nextCursor, maxChars: 6000 })).result
+  assert.equal(second.text, '😀B')
+  assert.equal(second.hasMore, false)
+})
+
+test('eval caps serialized results without disconnecting the shared host and preserves short values', async t => {
+  const h = await createHostHarness(t)
+  const large = await h.run('eval', 'A', { expression: '"x".repeat(1000001)' })
+  assert.equal(large.ok, true)
+  assert.equal(large.result.value.length, 1_000_000)
+  assert.equal(large.result.truncated, true)
+  assert.equal(h.connection.destroyed, false)
+  assert.equal((await h.run('state', 'B')).ok, true)
+  const emoji = await h.run('eval', 'A', { expression: '"x".repeat(999999) + "😀"' })
+  assert.equal(emoji.result.value.length, 999999)
+  assert.equal(emoji.result.value.endsWith('😀'), false)
+  assert.equal(emoji.result.truncated, true)
+  const short = await h.run('eval', 'A', { expression: 'true' })
+  assert.deepEqual(short.result, { ok: true, value: 'true', truncated: false })
+})
+
 test('read selects a region, handles empty text and avoids splitting surrogate pairs', async t => {
   const h = await createHostHarness(t)
   await h.run('state')
@@ -400,6 +470,20 @@ test('canceling during typing delay keeps inserted characters and stops the rema
   assert.equal(h.natives[0].page.element.value, 'a')
   assert.match(h.response(id).error, /cancelled/)
   assert.equal(commandCount(h.natives[0], 'Input.insertText'), 1)
+})
+
+test('type and insertText count Unicode code points consistently', async t => {
+  const h = await createHostHarness(t)
+  const text = 'a😀b'
+  const inserted = await h.run('insertText', 'A', { text })
+  const ref = (await h.run('snapshot', 'A')).result.elements[0].ref
+  const id = h.submit('type', 'A', { ref, text })
+  for (let i = 0; i < 3; i++) { await h.flush(); h.fire(18) }
+  await h.flush()
+  h.fire(50)
+  await h.flush()
+  assert.equal(inserted.result.typed, 3)
+  assert.equal(h.response(id).result.typed, 3)
 })
 
 test('scroll dispatches a real wheel event at viewport coordinates and validates bounds', async t => {

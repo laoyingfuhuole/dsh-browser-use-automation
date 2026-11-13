@@ -139,7 +139,7 @@ export async function createHostHarness(t, { platform = 'linux', authenticate = 
       throw new Error(`Unexpected host import: ${name}`)
     },
     process: { env: { BROWSER_USE_TOKEN: 'fixture-token' }, platform, pid: 123, on() {}, stdout: { write: line => output.push(line) } },
-    console, URL,
+    console, URL, Buffer,
     setTimeout(callback, ms) { const id = {}; timeouts.set(id, { callback, ms }); return id },
     clearTimeout(id) { timeouts.delete(id) },
     setInterval(callback) { const id = { unref() {} }; intervals.set(id, callback); return id },

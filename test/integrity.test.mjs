@@ -6,7 +6,7 @@ import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { pathToFileURL } from 'node:url'
 
-const paths = ['package.json', 'index.js', 'src/client.js', 'src/tools.js', 'src/integrity.js', 'host/main.cjs', 'cordis.patch.yml']
+const paths = ['package.json', 'index.js', 'src/client.js', 'src/tools.js', 'src/integrity.js', 'host/main.cjs', 'cordis.patch.yml', 'README.md', 'LICENSE']
 
 async function fixture(t, changeManifest) {
   const root = mkdtempSync(join(tmpdir(), 'browser-use-integrity-'))
@@ -36,6 +36,7 @@ test('complete package verifies independently of the checkout', async t => {
   const result = h.module.verifyInstallation()
   assert.equal(result.version, '0.3.5')
   assert.equal(result.filesChecked, 7)
+  assert.equal(result.manifestFiles, 9)
 })
 
 test('modified or missing runtime files are rejected', async t => {
@@ -45,6 +46,14 @@ test('modified or missing runtime files are rejected', async t => {
     else writeFileSync(join(h.root, 'host/main.cjs'), 'modified')
     assert.throws(() => h.module.verifyInstallation(), mismatch)
   }
+})
+
+test('non-runtime documentation may change while runtime code changes still fail', async t => {
+  const h = await fixture(t)
+  writeFileSync(join(h.root, 'README.md'), 'documentation changed')
+  assert.doesNotThrow(() => h.module.verifyInstallation())
+  writeFileSync(join(h.root, 'src/client.js'), 'runtime code changed')
+  assert.throws(() => h.module.verifyInstallation(), mismatch)
 })
 
 test('changing manifest after module load requires reload', async t => {

@@ -346,7 +346,7 @@ export function registerTools(ctx, client, config = {}) {
 
   register(defineTool({
     name: 'browser_use_eval',
-    description: 'Evaluate a JavaScript expression in the page and return its value as a string. Use for values a snapshot cannot express; do not use it to drive the page when a ref-based tool exists.',
+    description: 'Evaluate a JavaScript expression in the page and return its value as a string. Results are capped at 1,000,000 UTF-16 code units and report truncation; read long documents in chunks instead. Use for values a snapshot cannot express; do not use it to drive the page when a ref-based tool exists.',
     parameters: {
       expression: { type: 'string', required: true, description: 'JavaScript expression evaluated in the page.' },
     },
@@ -358,11 +358,14 @@ export function registerTools(ctx, client, config = {}) {
           ok: { type: 'boolean', required: true },
           value: { type: 'string' },
           exception: { type: 'string' },
+          truncated: { type: 'boolean' },
         },
       },
       render: (_args, value) => [{
         type: 'text',
-        text: value.ok ? `Result: ${String(value.value ?? '').slice(0, 50_000)}` : `Exception: ${value.exception ?? 'unknown'}`,
+        text: value.ok
+          ? `Result: ${String(value.value ?? '').slice(0, 50_000)}${value.truncated === true ? '\nResult truncated by the browser host; do not treat it as complete.' : String(value.value ?? '').length > 50_000 ? '\nDisplay shortened to 50,000 characters; the returned value is longer.' : ''}`
+          : `Exception: ${value.exception ?? 'unknown'}`,
       }],
     },
     timeoutMs: 30_000,
@@ -484,10 +487,11 @@ export function registerTools(ctx, client, config = {}) {
 
   register(defineTool({
     name: 'browser_use_read',
-    description: 'Read rendered text from this conversation’s top-level page or the first matching CSS region, without changing snapshot refs. Includes off-viewport rendered text, not just the screen. This is plain page text, not article extraction; no iframe, shadow-root traversal, canvas or OCR. Hidden roots return empty text. Default 6000 UTF-16 code units, maximum 24000; truncation is explicit and never splits a surrogate pair.',
+    description: 'Read rendered text from this conversation’s top-level page or the first matching CSS region, without changing snapshot refs. Use the returned opaque nextCursor to continue a long document; a cursor becomes stale if the page or selector changes. Includes off-viewport rendered text, not just the screen. This is plain page text, not article extraction; no iframe, shadow-root traversal, canvas or OCR. Hidden roots return empty text. Default 6000 UTF-16 code units, maximum 24000; truncation is explicit and never splits a surrogate pair.',
     parameters: {
       selector: { type: 'string', description: 'Optional CSS selector for the first HTML region to read; defaults to body.' },
       maxChars: { type: 'number', description: 'Integer output budget in UTF-16 code units, from 1 to 24000 (default 6000).' },
+      cursor: { type: 'string', description: 'Opaque nextCursor returned by an earlier read of the same page and selector.' },
     },
     output: {
       schema: {
@@ -500,11 +504,13 @@ export function registerTools(ctx, client, config = {}) {
           totalChars: { type: 'number', required: true },
           returnedChars: { type: 'number', required: true },
           truncated: { type: 'boolean', required: true },
+          hasMore: { type: 'boolean', required: true },
+          nextCursor: { type: 'string' },
         },
       },
       render: (_args, value) => [{
         type: 'text',
-        text: `URL: ${value.url}\nTitle: ${value.title}\nScope: top-level rendered text only; no frame traversal, OCR or article filtering.\nCharacters (UTF-16): ${value.returnedChars}/${value.totalChars}${value.truncated ? ' (truncated; select a narrower region or increase maxChars up to 24000)' : ''}\n\n${value.text || '(no rendered text in the selected region)'}`,
+        text: `URL: ${value.url}\nTitle: ${value.title}\nScope: top-level rendered text only; no frame traversal, OCR or article filtering.\nCharacters (UTF-16): ${value.returnedChars}/${value.totalChars}${value.hasMore ? ' (more available; call browser_use_read with nextCursor)' : value.truncated ? ' (truncated)' : ''}\n\n${value.text || '(no rendered text in the selected region)'}`,
       }],
     },
     timeoutMs: 30_000,
@@ -513,6 +519,7 @@ export function registerTools(ctx, client, config = {}) {
       return call('read', {
         ...args.selector !== undefined ? { selector: args.selector } : {},
         ...args.maxChars !== undefined ? { maxChars: args.maxChars } : {},
+        ...args.cursor !== undefined ? { cursor: args.cursor } : {},
       }, exec)
     },
   }))

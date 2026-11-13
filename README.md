@@ -4,16 +4,17 @@
 
 ## 当前版本
 
-`v0.4.0`（当前版本）。`browser_use_*` 工具名、`BROWSER_USE_*` 环境变量与错误码保持稳定。
+`v0.4.1`（当前版本）。`browser_use_*` 工具名、`BROWSER_USE_*` 环境变量与错误码保持稳定。
 
 ## 功能迭代
 
+- `v0.4.1`：`browser_use_read` 支持页面版本绑定的 `nextCursor` 续读；超长 eval 返回添加安全上限及截断提示；运行时完整性校验仅阻断执行文件，发布校验继续覆盖完整包；统一 `type` / `insertText` 输入计数为 Unicode 码点。
 - `v0.4.0`：新增 `browser_use_hover`（按 ref 悬停）、`browser_use_scroll`（真实滚轮事件，支持横向）、`browser_use_key`（受限功能键与修饰键组合）与 `browser_use_read`（带长度预算与截断提示的正文读取）；补充 `node:test` 回归测试、语法检查脚本与跨平台 CI 工作流。
 - `v0.3.1`：修复 Windows 启动前导 CRLF 导致的握手失败；新增只读 Electron 就绪诊断 `npm run check:runtime`；Windows 点 X 关闭当前对话窗口，最后一个原生窗口关闭后刷新共享存储并退出 host；macOS 保持 X 隐藏、Cmd+Q 退出整个浏览器 host。项目仅保留本篇中文 README。
 - `v0.3.0`：从一个离屏窗口改为**每个对话一个独立窗口**，按对话 ID 路由，工具不能跨对话选窗口；新增 `browser_use_insert_text`、`browser_use_reset`，`browser_use_close` 只关闭当前对话窗口；所有窗口共享 `session.defaultSession`（Cookie、localStorage、IndexedDB），页面与 sessionStorage 独立；新增发布文件完整性校验（`integrity.json` + SHA-256）。
 - `v0.2.0`：重建基础版本——单窗口离屏后台运行、CDP 驱动、编号快照 ref、截图、`eval`、等待与断言、Dock 菜单，不抢焦点。
 
-macOS 真实 Electron 回归已覆盖主要路径；Windows 新修复已通过平台模拟测试，仍需用匹配版本、无 shim 的 Electron 在 Windows 实机复验。真实 DSH UI 双对话验收仍待完成。对外使用 `vX.Y.Z` 标签，package.json 使用标准数字版本 `0.4.0`。
+macOS 真实 Electron 回归已覆盖主要路径；Windows 新修复已通过平台模拟测试，仍需用匹配版本、无 shim 的 Electron 在 Windows 实机复验。真实 DSH UI 双对话验收仍待完成。对外使用 `vX.Y.Z` 标签，package.json 使用标准数字版本 `0.4.1`。
 
 ## 功能
 
@@ -41,7 +42,7 @@ macOS 真实 Electron 回归已覆盖主要路径；Windows 新修复已通过�
 | `browser_use_wait` | 等待加载 / 选择器 / 文本 / URL |
 | `browser_use_assert` | 校验选择器、文本、URL 或 JS 真值 |
 | `browser_use_state` | URL、标题、readyState、首段可见文本 |
-| `browser_use_read` | 读取顶层页面或 CSS 区域的渲染文本，支持长度预算与截断提示，不刷新 ref |
+| `browser_use_read` | 读取顶层页面或 CSS 区域的渲染文本，支持长度预算、截断提示和 nextCursor 续读，不刷新 ref |
 | `browser_use_back` / `browser_use_reload` | 后退 / 刷新 |
 | `browser_use_close` | 关闭当前对话窗口，不影响其他对话 |
 | `browser_use_reset` | 经用户确认后，立即重置当前卡住的窗口；共享登录数据保留 |
@@ -69,11 +70,11 @@ macOS 真实 Electron 回归已覆盖主要路径；Windows 新修复已通过�
 | `selector` | 可选非空 CSS 选择器，默认 body；非法选择器、未匹配或非 HTML 目标明确报错 |
 | `maxChars` | 可选整数，默认 6000，范围 1–24000；非法值报错，不静默修正 |
 
-结果包含 `url`、`title`、`text`、`totalChars`、`returnedChars` 和 `truncated`。长度按 JavaScript UTF-16 单元计，截断不拆开 emoji 等字符的代理对，因此实际返回长度可能略小于预算。截断后可增大预算或选择更窄区域；此版不提供续读游标或分页。
+结果包含 `url`、`title`、`text`、`totalChars`、`returnedChars`、`truncated`、`hasMore` 和可选 `nextCursor`。长度按 JavaScript UTF-16 单元计，截断不拆开 emoji 等字符的代理对，因此实际返回长度可能略小于预算。`hasMore: true` 时，把不透明的 `nextCursor` 原样传回同一页面和 selector 可继续读取；cursor 不包含正文，只绑定页面版本、selector、下一个位置和正文指纹。导航、selector 变化或正文变化后会明确报 stale cursor，不会把不同版本正文拼在一起。
 
 读取采用浏览器 `innerText` 的渲染文本语义，包括视口之外已渲染的内容，不自动滚动、不改变表单或刷新 snapshot refs。隐藏或无布局的读取根节点返回空文本，避免 `innerText` 在隐藏根上回退为隐藏内容；这不是像素级可见性检测，透明后代、被覆盖文本等仍可能出现在 `innerText` 中。不存在 body 时明确报错；空区域返回空文本而不是伪造内容。
 
-本版只读取顶层 HTML 区域，不递归 iframe 或 Shadow DOM，不做 OCR、文章排序、跨页检索或自动过滤导航。读取期间主框架导航会报页面变化；动态内容仍是调用时的一次观察，不承诺 DOM 全程不变。此实现仅借鉴输出预算、截断提示及范围声明的设计思路，未复制 inner-browser 的读取器，也未更换 Electron/CDP 架构。
+本版只读取顶层 HTML 区域，不递归 iframe 或 Shadow DOM，不做 OCR、文章排序、跨页检索或自动过滤导航。读取期间主框架导航会使 cursor 失效；动态内容在两次读取之间变化时可能需要重新读取。此实现使用页面版本绑定的 opaque cursor 借鉴成熟分页 API 的续读语义，未复制 inner-browser 的读取器，也未更换 Electron/CDP 架构。
 
 ### 对话与窗口
 
@@ -186,11 +187,11 @@ npm test -- --test-name-pattern="startup|cancel"
 - **host**：隔离 Electron 环境下验证对话路由、操作队列、取消、ref 失效、滚轮坐标/限幅、键盘映射和 keyDown/keyUp 清理以及显式 close/reset；模拟测试不证明原生窗口或真实 CDP 的平台行为。
 - **正文读取**：预算/截断、区域和错误输入、代理对边界、隐藏根、对话隔离、导航变化及读取后继续使用原 ref；最小 DOM 夹具不代替真实 Chromium 排版验收。
 - **工具契约**：工具注册、可信对话 ID 和 signal 转发、reset 严格确认、非空断言及 AND 语义、截图字节与路径输出。
-- **安装完整性**：在独立临时包中检查文件改动/缺失、清单变更、非法清单和版本混装。
+- **安装完整性**：在独立临时包中检查运行文件改动/缺失、清单变更、非法清单和版本混装；运行时校验只阻断执行文件，发布校验仍覆盖完整包。
 
 [CI 工作流](.github/workflows/ci.yml) 在 push、pull request 和手动触发时，对 Ubuntu/Windows/macOS × Node 22.19.0/24 运行测试、语法检查、发布清单和安装自检，另检查 npm 打包内容。CI 不执行依赖安装、不下载 Electron、不启动 DSH，也不会自动生成清单来掩盖陈旧清单；修改发布文件后仍需维护者主动运行 `npm run prepare:release`。工作流提交并推送后才会产生远端结果，本地通过不能视为远端矩阵已经通过。
 
-这些开发测试、启动器和工作流不进入插件发布文件列表；市场安装用户无需运行 `npm test`。尚需另行进行真实 DSH 双对话、Electron 导航/输入、Windows 任务栏/多屏及 Linux 实机验收。模拟环境中的跨平台绿灯不等同实机兼容性认证。
+这些开发测试、启动器和工作流不进入插件发布文件列表；`npm test` 和 `npm run check:syntax` 仅在源码 checkout 中可用，市场安装用户无需运行。尚需另行进行真实 DSH 双对话、Electron 导航/输入、Windows 任务栏/多屏及 Linux 实机验收。模拟环境中的跨平台绿灯不等同实机兼容性认证。
 
 ## 浏览器窗口
 

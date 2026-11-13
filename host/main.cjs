@@ -53,6 +53,8 @@ const windows = new Map()
 // 一个连接内的请求表：取消通过 requestId 定位，同时校验 conversationId，不能跨对话。
 const requests = new Map()
 const REQUEST_TIMEOUT_MS = 60_000
+const EVAL_RESULT_MAX_CHARS = 1_000_000
+const READ_MAX_CHARS = 24_000
 
 function finishRequest(job, error, result) {
   if (job.done) return
@@ -751,12 +753,25 @@ function createConversation(conversationId) {
 
   async function readText(message) {
     const maxChars = message.maxChars === undefined ? 6000 : message.maxChars
-    if (!Number.isInteger(maxChars) || maxChars < 1 || maxChars > 24000) {
+    if (!Number.isInteger(maxChars) || maxChars < 1 || maxChars > READ_MAX_CHARS) {
       throw new TypeError('read maxChars must be an integer between 1 and 24000')
     }
     const selector = message.selector === undefined ? '' : message.selector
     if (typeof selector !== 'string' || (message.selector !== undefined && selector.trim() === '')) {
       throw new TypeError('read selector must be a non-empty CSS selector when provided')
+    }
+    let offset = 0
+    let cursorToken
+    if (message.cursor !== undefined) {
+      if (typeof message.cursor !== 'string' || message.cursor.length > 4096) throw new TypeError('read cursor is invalid')
+      let token
+      try { token = JSON.parse(Buffer.from(message.cursor, 'base64url').toString('utf8')) } catch { throw new TypeError('read cursor is invalid') }
+      if (token?.version !== documentVersion || token.selector !== selector
+        || typeof token.fingerprint !== 'string' || !Number.isSafeInteger(token.offset) || token.offset < 0) {
+        throw new Error('stale read cursor; page or selector changed, read again')
+      }
+      cursorToken = token
+      offset = token.offset
     }
     const version = documentVersion
     const result = await evaluate(`(() => {
@@ -770,17 +785,36 @@ function createConversation(conversationId) {
         && !root.closest('[hidden]')
       // innerText on an unrendered root can fall back to textContent and expose hidden text.
       const text = rendered ? root.innerText : ''
+      let hashA = 2166136261
+      let hashB = 2654435769
+      for (let index = 0; index < text.length; index++) {
+        const code = text.charCodeAt(index)
+        hashA = Math.imul(hashA ^ code, 16777619) >>> 0
+        hashB = Math.imul(hashB ^ (code + index), 2246822519) >>> 0
+        hashB ^= hashB >>> 13
+      }
+      const fingerprint = text.length.toString(36) + '.' + hashA.toString(36) + '.' + hashB.toString(36)
+      const start = ${offset}
       const limit = ${maxChars}
-      let end = Math.min(text.length, limit)
+      if (start > text.length) throw new Error('stale read cursor; page content became shorter, read again')
+      let end = Math.min(start + limit, text.length)
       if (end > 0 && end < text.length
         && /[\\uD800-\\uDBFF]/.test(text[end - 1]) && /[\\uDC00-\\uDFFF]/.test(text[end])) end--
       return {
-        url: location.href, title: document.title, text: text.slice(0, end),
-        totalChars: text.length, returnedChars: end, truncated: end < text.length,
+        url: location.href, title: document.title, text: text.slice(start, end),
+        totalChars: text.length, offset: start, returnedChars: end - start, truncated: end < text.length, fingerprint,
       }
     })()`)
     if (version !== documentVersion) throw new Error('page changed during read; read again')
-    return result
+    if (cursorToken && result.fingerprint !== cursorToken.fingerprint) {
+      throw new Error('stale read cursor; page content changed, read again')
+    }
+    const nextOffset = result.offset + result.returnedChars
+    const hasMore = result.offset + result.returnedChars < result.totalChars
+    const nextCursor = hasMore
+      ? Buffer.from(JSON.stringify({ version, selector, offset: nextOffset, fingerprint: result.fingerprint }), 'utf8').toString('base64url')
+      : null
+    return { ...result, hasMore, nextCursor }
   }
 
   async function dispatch(message) {
@@ -802,8 +836,11 @@ function createConversation(conversationId) {
       case 'type':
         return type(message.ref, String(message.text ?? ''))
       case 'insertText':
-        await cdp('Input.insertText', { text: String(message.text ?? '') })
-        return { typed: String(message.text ?? '').length }
+        {
+          const text = String(message.text ?? '')
+          await cdp('Input.insertText', { text })
+          return { typed: Array.from(text).length }
+        }
       case 'scroll':
         return scroll(message)
       case 'key':
@@ -814,7 +851,16 @@ function createConversation(conversationId) {
         // eval 的页面异常是内层业务结果 ok: false，不改变外层 RPC 成功信封。
         try {
           const value = await evaluate(message.expression)
-          return { ok: true, value: typeof value === 'string' ? value : JSON.stringify(value ?? null) }
+          const serialized = typeof value === 'string' ? value : JSON.stringify(value ?? null)
+          let end = Math.min(serialized.length, EVAL_RESULT_MAX_CHARS)
+          if (end > 0 && end < serialized.length
+            && /[\uD800-\uDBFF]/.test(serialized[end - 1])
+            && /[\uDC00-\uDFFF]/.test(serialized[end])) end--
+          return {
+            ok: true,
+            value: serialized.slice(0, end),
+            truncated: end < serialized.length,
+          }
         } catch (error) {
           assertOperation()
           return { ok: false, exception: String(error && error.message ? error.message : error) }

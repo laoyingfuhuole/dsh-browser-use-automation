@@ -9,6 +9,9 @@ import { fileURLToPath } from 'node:url'
 
 const root = new URL('../', import.meta.url)
 const manifestUrl = new URL('integrity.json', root)
+const RUNTIME_FILES = new Set([
+  'package.json', 'index.js', 'src/client.js', 'src/tools.js', 'src/integrity.js', 'host/main.cjs', 'cordis.patch.yml',
+])
 // 固定当前模块加载时的清单；同路径被市场换包后，旧客户端不能再启动新版 host。
 let loadedManifest
 let manifestError
@@ -42,12 +45,20 @@ export function verifyInstallation() {
         const stat = lstatSync(new URL(parts.slice(0, i).join('/'), root))
         if (stat.isSymbolicLink() || (i === parts.length ? !stat.isFile() : !stat.isDirectory())) throw new Error(`unsupported file shape: ${path}`)
       }
+      // README/LICENSE 等非执行文件由发布期完整清单校验；本次加载只阻断会影响运行的文件混装。
+      if (!RUNTIME_FILES.has(path)) continue
       const actual = createHash('sha256').update(readFileSync(new URL(path, root))).digest('hex')
       if (actual !== expected) throw new Error(`content mismatch: ${path}`)
     }
     const pkg = JSON.parse(readFileSync(new URL('package.json', root), 'utf8'))
     if (pkg.name !== manifest.name || pkg.version !== manifest.version) throw new Error('package version differs from integrity manifest')
-    return { version: manifest.version, filesChecked: Object.keys(manifest.files).length, directory: fileURLToPath(root) }
+    return {
+      version: manifest.version,
+      filesChecked: [...RUNTIME_FILES].filter(path => Object.hasOwn(manifest.files, path)).length,
+      manifestFiles: Object.keys(manifest.files).length,
+      scope: 'runtime',
+      directory: fileURLToPath(root),
+    }
   } catch (error) {
     throw invalid(error.message)
   }
