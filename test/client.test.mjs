@@ -136,6 +136,22 @@ test('sent cancellation notifies once, clears listeners, ignores late response a
   assert.equal(socket.destroyed, false)
 })
 
+test('fast input cancellation and timeout warn about uncertain partial insertion', async t => {
+  for (const timeout of [false, true]) {
+    const h = await createClientHarness(t)
+    const socket = await h.ready()
+    const controller = new AbortController()
+    const request = { ...message(1, 'type'), mode: 'fast', text: 'abc' }
+    const pending = h.client.request(request, 10, controller.signal)
+    const rejected = assert.rejects(pending, /fast input may be partially inserted.*do not retry automatically/)
+    if (timeout) h.expire()
+    else controller.abort()
+    await rejected
+    assert.deepEqual(socket.writes.map(item => item.op), ['hello', 'type', 'cancel'])
+    assert.equal(h.client.pending.size, 0)
+  }
+})
+
 test('request timeout notifies host without closing or automatically retrying mutations', async t => {
   const h = await createClientHarness(t)
   const socket = await h.ready()

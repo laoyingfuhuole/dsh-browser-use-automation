@@ -14,7 +14,7 @@
 
 const { app, BrowserWindow, Menu, screen, session } = require('electron')
 const { createServer } = require('node:net')
-const { randomBytes } = require('node:crypto')
+const { randomBytes, createHmac } = require('node:crypto')
 const { mkdirSync } = require('node:fs')
 const { isAbsolute } = require('node:path')
 
@@ -62,7 +62,13 @@ function finishRequest(job, error, result) {
   clearTimeout(job.timer)
   requests.delete(job.message.id)
   job.record.jobs.delete(job)
-  if (error) send({ id: job.message.id, ok: false, error: error.message || String(error) })
+  if (error) {
+    const progress = job.inputProgress
+    const detail = progress
+      ? `; input progress: ${progress.typed}/${progress.total} Unicode code points acknowledged${progress.inFlight ? ', an in-flight chunk may still complete' : ''}; inspect the field before continuing, do not retry automatically`
+      : ''
+    send({ id: job.message.id, ok: false, error: (error.message || String(error)) + detail })
+  }
   else send({ id: job.message.id, ok: true, result })
 }
 
@@ -123,6 +129,8 @@ function createConversation(conversationId) {
   let refs = new Map()
   let documentVersion = 0
   const elementRegistryKey = '__dsh_refs_' + randomBytes(16).toString('hex')
+  // 每代窗口独立签发游标，跨对话、close/reset 和 host 重启都不能误用旧读取位置。
+  const readCursorKey = randomBytes(32)
   function invalidateRefs() { refs.clear(); documentVersion += 1 }
   let revealReady = false
   let disposed = false
@@ -274,7 +282,10 @@ function createConversation(conversationId) {
   // 返回标签、视口坐标和可选选择器，不尝试跨进程传递 DOM 节点。
   // 最多收集 150 项；这是一份操作快照，不是完整的 DOM/无障碍树。
   const SNAPSHOT_SCRIPT = `(() => {
+    const options = SNAPSHOT_OPTIONS
     const selectors = 'a[href],button,input:not([type="hidden"]),textarea,select,summary,[role="button"],[role="link"],[role="textbox"],[contenteditable="true"]'
+    const root = options.selector ? document.querySelector(options.selector) : document
+    if (!root) throw new Error('snapshot selector did not match an element')
     const visible = (el) => {
       const rect = el.getBoundingClientRect()
       if (rect.width < 4 || rect.height < 4) return false
@@ -301,9 +312,14 @@ function createConversation(conversationId) {
     // Map 保存实际 DOM 节点，不能用旧 selector 再匹配“长得一样”的替代节点。
     Object.defineProperty(globalThis, REGISTRY_KEY, { value: nodes, configurable: true })
     const seen = new Set()
-    for (const el of document.querySelectorAll(selectors)) {
+    const candidates = root === document || !root.matches(selectors)
+      ? root.querySelectorAll(selectors)
+      : [root, ...root.querySelectorAll(selectors)]
+    let truncated = false
+    for (const el of candidates) {
       if (seen.has(el) || !visible(el)) continue
       seen.add(el)
+      if (out.length >= options.maxElements) { truncated = true; break }
       const rect = el.getBoundingClientRect()
       const ref = FIRST_REF + out.length
       nodes.set(ref, el)
@@ -313,26 +329,37 @@ function createConversation(conversationId) {
         label: labelOf(el),
         x: Math.round(rect.left + rect.width / 2),
         y: Math.round(rect.top + rect.height / 2),
-        selector: selectorOf(el),
+        ...options.includeSelectors ? { selector: selectorOf(el) } : {},
       })
-      if (out.length >= 150) break
     }
     return {
       url: location.href,
       title: document.title,
       elements: out,
-      truncated: out.length >= 150,
+      truncated,
+      maxElements: options.maxElements,
+      ...options.selector ? { selector: options.selector } : {},
     }
   })()`
 
   // 数字 ref 只属于这个窗口的最近快照；任何新快照、主框架导航都会使旧 ref 失效。
-  async function snapshot() {
+  async function snapshot(options = {}) {
+    const { selector, maxElements = 150, includeSelectors = true } = options
+    if (selector !== undefined && (typeof selector !== 'string' || selector.trim() === '')) {
+      throw new TypeError('snapshot selector must be a non-empty CSS selector when provided')
+    }
+    if (!Number.isInteger(maxElements) || maxElements < 1 || maxElements > 150) {
+      throw new TypeError('snapshot maxElements must be an integer between 1 and 150')
+    }
+    if (typeof includeSelectors !== 'boolean') throw new TypeError('snapshot includeSelectors must be a boolean')
     refs.clear()
     const version = documentVersion
     const firstRef = nextElementRef + 1
     nextElementRef += 150
     if (!Number.isSafeInteger(nextElementRef)) throw new Error('snapshot ref space exhausted; restart host')
-    const script = SNAPSHOT_SCRIPT.replace('REGISTRY_KEY', JSON.stringify(elementRegistryKey)).replace('FIRST_REF', String(firstRef))
+    const script = SNAPSHOT_SCRIPT.replace('REGISTRY_KEY', JSON.stringify(elementRegistryKey))
+      .replace('FIRST_REF', String(firstRef))
+      .replace('SNAPSHOT_OPTIONS', () => JSON.stringify({ selector, maxElements, includeSelectors }))
     const value = await evaluate(script)
     assertOperation()
     if (version !== documentVersion) throw new Error('page changed during snapshot; take a new snapshot')
@@ -686,9 +713,31 @@ function createConversation(conversationId) {
 
   // focus 仅改变页面内的输入位置，绝不激活原生窗口。每次插入前确认焦点仍在原元素，
   // 避免网站重渲染/用户切焦后把剩余文字写进其他输入框。
-  async function type(ref, text) {
+  async function type(ref, text, mode = 'human') {
+    if (!['human', 'fast'].includes(mode)) throw new TypeError('type mode must be human or fast')
     let point = await resolveTarget(ref, 'focus')
     const characters = Array.from(text)
+    if (mode === 'fast') {
+      const progress = { typed: 0, total: characters.length, inFlight: false }
+      const job = activeJob
+      if (job) job.inputProgress = progress
+      // 小块保留取消和焦点重检边界；只统计已获 CDP 确认的部分，不猜测超时块的结果。
+      for (let start = 0; start < characters.length; start += 256) {
+        point = await resolveTarget(ref, 'typing')
+        const chunk = characters.slice(start, start + 256)
+        await whileLive(async () => {
+          assertOperation()
+          progress.inFlight = true
+          await win.webContents.debugger.sendCommand('Input.insertText', { text: chunk.join('') })
+          progress.typed += chunk.length
+          progress.inFlight = false
+        })
+        assertOperation()
+      }
+      await showCursor(point.x, point.y, 'type')
+      assertOperation()
+      return { typed: progress.typed }
+    }
     for (const character of characters) {
       point = await resolveTarget(ref, 'typing')
       await cdp('Input.insertText', { text: character })
@@ -756,21 +805,28 @@ function createConversation(conversationId) {
     if (!Number.isInteger(maxChars) || maxChars < 1 || maxChars > READ_MAX_CHARS) {
       throw new TypeError('read maxChars must be an integer between 1 and 24000')
     }
-    const selector = message.selector === undefined ? '' : message.selector
+    let selector = message.selector === undefined ? '' : message.selector
     if (typeof selector !== 'string' || (message.selector !== undefined && selector.trim() === '')) {
       throw new TypeError('read selector must be a non-empty CSS selector when provided')
     }
     let offset = 0
     let cursorToken
     if (message.cursor !== undefined) {
-      if (typeof message.cursor !== 'string' || message.cursor.length > 4096) throw new TypeError('read cursor is invalid')
+      if (typeof message.cursor !== 'string' || message.cursor.length > 4096
+        || !/^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/.test(message.cursor)) throw new TypeError('read cursor is invalid')
+      const [payload, signature] = message.cursor.split('.')
+      if (createHmac('sha256', readCursorKey).update(payload).digest('base64url') !== signature) {
+        throw new Error('stale read cursor; wrong window or invalid cursor, read again')
+      }
       let token
-      try { token = JSON.parse(Buffer.from(message.cursor, 'base64url').toString('utf8')) } catch { throw new TypeError('read cursor is invalid') }
-      if (token?.version !== documentVersion || token.selector !== selector
-        || typeof token.fingerprint !== 'string' || !Number.isSafeInteger(token.offset) || token.offset < 0) {
+      try { token = JSON.parse(Buffer.from(payload, 'base64url').toString('utf8')) } catch { throw new TypeError('read cursor is invalid') }
+      if (token?.format !== 1 || token.version !== documentVersion || typeof token.selector !== 'string'
+        || (message.selector !== undefined && token.selector !== selector)
+        || typeof token.fingerprint !== 'string' || !Number.isSafeInteger(token.offset) || token.offset < 1) {
         throw new Error('stale read cursor; page or selector changed, read again')
       }
       cursorToken = token
+      selector = token.selector
       offset = token.offset
     }
     const version = documentVersion
@@ -800,6 +856,7 @@ function createConversation(conversationId) {
       let end = Math.min(start + limit, text.length)
       if (end > 0 && end < text.length
         && /[\\uD800-\\uDBFF]/.test(text[end - 1]) && /[\\uDC00-\\uDFFF]/.test(text[end])) end--
+      if (start < text.length && end === start) throw new Error('read maxChars is too small for the next Unicode character; increase maxChars to at least 2')
       return {
         url: location.href, title: document.title, text: text.slice(start, end),
         totalChars: text.length, offset: start, returnedChars: end - start, truncated: end < text.length, fingerprint,
@@ -811,10 +868,14 @@ function createConversation(conversationId) {
     }
     const nextOffset = result.offset + result.returnedChars
     const hasMore = result.offset + result.returnedChars < result.totalChars
-    const nextCursor = hasMore
-      ? Buffer.from(JSON.stringify({ version, selector, offset: nextOffset, fingerprint: result.fingerprint }), 'utf8').toString('base64url')
-      : null
-    return { ...result, hasMore, nextCursor }
+    let nextCursor
+    if (hasMore) {
+      const payload = Buffer.from(JSON.stringify({ format: 1, version, selector, offset: nextOffset, fingerprint: result.fingerprint }), 'utf8').toString('base64url')
+      nextCursor = payload + '.' + createHmac('sha256', readCursorKey).update(payload).digest('base64url')
+      if (nextCursor.length > 4096) throw new Error('read selector is too long for a continuation cursor; use a shorter selector')
+    }
+    const { fingerprint, ...page } = result
+    return { ...page, hasMore, ...hasMore ? { nextCursor } : {} }
   }
 
   async function dispatch(message) {
@@ -828,13 +889,13 @@ function createConversation(conversationId) {
       case 'navigate':
         return navigate(message.url)
       case 'snapshot':
-        return snapshot()
+        return snapshot(message)
       case 'click':
         return click(message.ref)
       case 'hover':
         return hover(message.ref)
       case 'type':
-        return type(message.ref, String(message.text ?? ''))
+        return type(message.ref, String(message.text ?? ''), message.mode)
       case 'insertText':
         {
           const text = String(message.text ?? '')
@@ -999,8 +1060,8 @@ function createConversation(conversationId) {
     backgrounded = true
     transitioning = true
     try {
-      // 可激活窗口不会因 showInactive 自动失焦；主动收回已显示窗口时先释放键盘焦点。
-      if (WINDOWS_TASKBAR && win.isFocused()) win.blur()
+      // macOS 的 setFocusable(false) 不释放已有 key window；收回人工查看窗口时需先失焦。
+      if (win.isFocused()) win.blur()
       setBackgroundProperties()
       showInactiveInBackground()
       return { hidden: true, bounds: win.getBounds(), opacity: win.getOpacity(), visible: win.isVisible() }
@@ -1018,6 +1079,7 @@ function createConversation(conversationId) {
       width: WIDTH,
       height: HEIGHT,
       show: false,
+      focusable: WINDOWS_TASKBAR,
       title,
       skipTaskbar: !WINDOWS_TASKBAR,
       webPreferences: {
@@ -1028,6 +1090,8 @@ function createConversation(conversationId) {
         backgroundThrottling: false,
       },
     })
+    // 首次 loadURL 也可能触发原生焦点请求，不能等 about:blank/CDP 就绪后才禁止聚焦和鼠标命中。
+    setBackgroundProperties()
     // 页面不能再开第二个原生窗口。target=_blank 等 HTTP(S) 链接改在当前
     // 窗口加载，其他新窗口请求拒绝；不影响其他对话已拥有的窗口。
     win.webContents.setWindowOpenHandler(({ url }) => {
@@ -1082,7 +1146,7 @@ function createConversation(conversationId) {
     })
     win.on('minimize', () => {
       // 最小化会影响绘制表面，稍后非激活地退回后台；Windows 不调用 restore。
-      // 其他平台保持 restore → 交互属性 → opacity → showInactive → park 的顺序，
+      // 恢复前必须先撤掉人工查看时的可聚焦性，否则 macOS deminiaturize 会短暂打断前台输入。
       // 不借用 hideToBackground，以免额外修改任务栏属性。
       schedule(() => {
         if (win === null || win.isDestroyed()) return
@@ -1094,8 +1158,11 @@ function createConversation(conversationId) {
             setBackgroundProperties()
             showInactiveInBackground()
           } else {
-            win.restore()
             setBackgroundProperties({ updateTaskbar: false })
+            if (win.isFocused()) win.blur()
+            win.setOpacity(0)
+            park()
+            win.restore()
             showInactiveInBackground()
           }
         } finally {
@@ -1124,14 +1191,8 @@ function createConversation(conversationId) {
     } catch {
       // 部分平台不支持禁用最小化，失败不阻断启动。
     }
-    // Windows 先离屏再显示不透明表面，避免初始闪现；其他平台保留原顺序。
-    // 其他平台启动仍是 showInactive → opacity → park，与隐藏/恢复的顺序不同。
-    if (WINDOWS_TASKBAR) showInactiveInBackground()
-    else {
-      win.showInactive()
-      win.setOpacity(0)
-      park()
-    }
+    // 首次显示前也先透明，避免非激活窗口的原生表面短暂覆盖前台；仍保留 CDP 绘制表面。
+    showInactiveInBackground()
     revealReady = true
     // 有些焦点变化不触发 blur（例如从未成为焦点窗口的 showInactive 窗口），
     // 定时检查作为补偿，确保人工展示状态不会在切出应用后一直残留。

@@ -315,6 +315,10 @@ export class HostClient {
       const cancel = error => {
         if (settled) return
         cancellationRequested = true
+        // 客户端取消先于 host 回报；无法知道在途块的精确结果，不能诱导重试整段输入。
+        if (op === 'type' && message.mode === 'fast' && sent) {
+          error.message += '; fast input may be partially inserted or still settling; inspect the field before continuing, do not retry automatically'
+        }
         settle(reject, error)
         sendCancel()
       }

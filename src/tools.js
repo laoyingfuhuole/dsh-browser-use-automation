@@ -46,6 +46,8 @@ const SNAPSHOT_SCHEMA = {
     url: { type: 'string', required: true },
     title: { type: 'string' },
     truncated: { type: 'boolean' },
+    maxElements: { type: 'number' },
+    selector: { type: 'string' },
     elements: { type: 'array', required: true, items: ELEMENT_SCHEMA },
   },
 }
@@ -59,13 +61,13 @@ const SNAPSHOT_SCHEMA = {
  * @returns {string}
  */
 export function formatSnapshot(value) {
-  const header = `URL: ${value.url}${value.title ? `\nTitle: ${value.title}` : ''}`
+  const header = `URL: ${value.url}${value.title ? `\nTitle: ${value.title}` : ''}${value.selector ? `\nScope: ${value.selector}` : ''}`
   const lines = value.elements.map(element => {
     const selector = element.selector ? ` {${element.selector}}` : ''
     return `[${element.ref}] ${element.kind} "${element.label}"${selector}`
   })
   const body = lines.length > 0 ? lines.join('\n') : '(no interactive elements)'
-  return `${header}\n\n${body}${value.truncated === true ? '\n(truncated at 150 elements)' : ''}`
+  return `${header}\n\n${body}${value.truncated === true ? `\n(truncated at ${value.maxElements ?? 150} elements; narrow the selector or increase maxElements up to 150)` : ''}`
 }
 
 // 只有快照输出完全重复，提取这一小块即可；每次返回新的 output 对象，
@@ -133,13 +135,21 @@ export function registerTools(ctx, client, config = {}) {
 
   register(defineTool({
     name: 'browser_use_snapshot',
-    description: 'Return the current page as numbered interactive elements (buttons, links, inputs). Refs are valid only for this snapshot; take a new one after the page changes.',
-    parameters: {},
+    description: 'Return numbered interactive elements. Optional selector limits the first matching region (including its root); maxElements limits output to 1–150, and includeSelectors=false omits diagnostic CSS selectors. Every new snapshot replaces all refs in this conversation. Use refs already returned by open/back/reload; request another snapshot only when needed.',
+    parameters: {
+      selector: { type: 'string', description: 'Optional non-empty CSS selector for the region; defaults to the top-level document.' },
+      maxElements: { type: 'number', description: 'Integer limit from 1 to 150 (default 150). Truncation is reported.' },
+      includeSelectors: { type: 'boolean', description: 'Include diagnostic CSS selectors (default true). Set false for smaller output; refs still work.' },
+    },
     output: snapshotOutput(),
     timeoutMs: 30_000,
-    isConcurrencySafe: () => true,
-    async execute(_args, exec) {
-      return call('snapshot', {}, exec)
+    isConcurrencySafe: () => false,
+    async execute(args, exec) {
+      return call('snapshot', {
+        ...args.selector !== undefined ? { selector: args.selector } : {},
+        ...args.maxElements !== undefined ? { maxElements: args.maxElements } : {},
+        ...args.includeSelectors !== undefined ? { includeSelectors: args.includeSelectors } : {},
+      }, exec)
     },
   }))
 
@@ -266,10 +276,11 @@ export function registerTools(ctx, client, config = {}) {
 
   register(defineTool({
     name: 'browser_use_type',
-    description: 'Focus the element with the given ref and insert text with CDP Input.insertText. Use this for search boxes and forms; React/Vue controlled inputs receive a real input event.',
+    description: 'Append text to a validated editable ref via CDP Input.insertText. Default human mode inserts one Unicode code point at a time; fast mode inserts up to 256 code points per chunk, rechecking the same node and focus between chunks. No replacement or automatic retry. Interrupted input may be partial; inspect before continuing. Use human mode if a site needs per-character events.',
     parameters: {
       ref: { type: 'number', required: true, description: 'Ref from the latest snapshot.' },
       text: { type: 'string', required: true, description: 'Text to insert.' },
+      mode: { type: 'string', description: 'human (default, per-code-point delay) or fast (validated chunks, no artificial delay).' },
     },
     output: {
       schema: {
@@ -282,7 +293,7 @@ export function registerTools(ctx, client, config = {}) {
     timeoutMs: 30_000,
     isConcurrencySafe: () => false,
     async execute(args, exec) {
-      return call('type', { ref: args.ref, text: args.text }, exec)
+      return call('type', { ref: args.ref, text: args.text, ...args.mode !== undefined ? { mode: args.mode } : {} }, exec)
     },
   }))
 
@@ -487,9 +498,9 @@ export function registerTools(ctx, client, config = {}) {
 
   register(defineTool({
     name: 'browser_use_read',
-    description: 'Read rendered text from this conversation’s top-level page or the first matching CSS region, without changing snapshot refs. Use the returned opaque nextCursor to continue a long document; a cursor becomes stale if the page or selector changes. Includes off-viewport rendered text, not just the screen. This is plain page text, not article extraction; no iframe, shadow-root traversal, canvas or OCR. Hidden roots return empty text. Default 6000 UTF-16 code units, maximum 24000; truncation is explicit and never splits a surrogate pair.',
+    description: 'Read top-level rendered text or a CSS region without changing snapshot refs. Continue with nextCursor, which retains the original selector; stale after window recreation, navigation or changed text. No article filtering, frame/shadow traversal or OCR. Default 6000 UTF-16 units, maximum 24000. Surrogate pairs are preserved; a budget too small for the next character returns an error, never a non-progressing cursor.',
     parameters: {
-      selector: { type: 'string', description: 'Optional CSS selector for the first HTML region to read; defaults to body.' },
+      selector: { type: 'string', description: 'Optional CSS selector for the first HTML region; defaults to body. When continuing, omit to reuse the original selector or provide the identical selector.' },
       maxChars: { type: 'number', description: 'Integer output budget in UTF-16 code units, from 1 to 24000 (default 6000).' },
       cursor: { type: 'string', description: 'Opaque nextCursor returned by an earlier read of the same page and selector.' },
     },
@@ -502,6 +513,7 @@ export function registerTools(ctx, client, config = {}) {
           title: { type: 'string', required: true },
           text: { type: 'string', required: true },
           totalChars: { type: 'number', required: true },
+          offset: { type: 'number', required: true },
           returnedChars: { type: 'number', required: true },
           truncated: { type: 'boolean', required: true },
           hasMore: { type: 'boolean', required: true },
@@ -510,7 +522,7 @@ export function registerTools(ctx, client, config = {}) {
       },
       render: (_args, value) => [{
         type: 'text',
-        text: `URL: ${value.url}\nTitle: ${value.title}\nScope: top-level rendered text only; no frame traversal, OCR or article filtering.\nCharacters (UTF-16): ${value.returnedChars}/${value.totalChars}${value.hasMore ? ' (more available; call browser_use_read with nextCursor)' : value.truncated ? ' (truncated)' : ''}\n\n${value.text || '(no rendered text in the selected region)'}`,
+        text: `URL: ${value.url}\nTitle: ${value.title}\nScope: top-level rendered text only; no frame traversal, OCR or article filtering.\nCharacters (UTF-16): ${value.offset}–${value.offset + value.returnedChars} of ${value.totalChars} (returned ${value.returnedChars})${value.hasMore ? `\nMore available. Call browser_use_read with cursor: ${value.nextCursor}` : '\nEnd of selected text.'}\n\n${value.text || '(no rendered text in the selected region)'}`,
       }],
     },
     timeoutMs: 30_000,

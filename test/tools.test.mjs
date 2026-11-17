@@ -4,6 +4,24 @@ import vm from 'node:vm'
 import { readFileSync, mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { createHostHarness } from './helpers/host-harness.mjs'
+
+function assertOutput(schema, value) {
+  assert.equal(typeof value, 'object')
+  assert.notEqual(value, null)
+  for (const [key, field] of Object.entries(schema.properties)) {
+    if (field.required) assert.ok(Object.hasOwn(value, key), `missing ${key}`)
+    if (Object.hasOwn(value, key)) {
+      if (field.type === 'array') {
+        assert.ok(Array.isArray(value[key]))
+        if (field.items.type === 'object') for (const item of value[key]) assertOutput(field.items, item)
+      } else assert.equal(typeof value[key], field.type, key)
+    }
+  }
+  if (schema.additionalProperties === false) {
+    for (const key of Object.keys(value)) assert.ok(Object.hasOwn(schema.properties, key), `unexpected ${key}`)
+  }
+}
 
 async function fixture(t, { failAt } = {}) {
   const directory = mkdtempSync(join(tmpdir(), 'browser-use-tools-'))
@@ -60,7 +78,7 @@ test('read forwards its scope and budget, renders text and exposes truncation an
   const h = await fixture(t)
   h.register()
   const tool = h.definitions.get('browser_use_read')
-  h.client.result = { url: 'https://example.test/', title: 'Article', text: 'body text', totalChars: 20, returnedChars: 9, truncated: true }
+  h.client.result = { url: 'https://example.test/', title: 'Article', text: 'body text', offset: 0, totalChars: 20, returnedChars: 9, truncated: true, hasMore: true, nextCursor: 'opaque' }
   const result = await tool.execute({ selector: 'main', maxChars: 9 }, h.exec)
   assert.equal(h.calls[0].op, 'read')
   assert.equal(h.calls[0].payload.selector, 'main')
@@ -69,7 +87,8 @@ test('read forwards its scope and budget, renders text and exposes truncation an
   assert.equal(h.calls[0].signal, h.exec.signal)
   const text = tool.output.render({}, result)[0].text
   assert.match(text, /body text/)
-  assert.match(text, /9\/20.*truncated/)
+  assert.match(text, /0–9 of 20 \(returned 9\)/)
+  assert.match(text, /cursor: opaque/)
   assert.match(text, /no frame traversal/)
   await tool.execute({}, h.exec)
   assert.equal(h.calls[1].payload.maxChars, undefined)
@@ -80,10 +99,70 @@ test('read forwards opaque cursors and renders continuation guidance', async t =
   const h = await fixture(t)
   h.register()
   const tool = h.definitions.get('browser_use_read')
-  h.client.result = { url: 'https://example.test/', title: 'Article', text: 'next', totalChars: 20, returnedChars: 4, truncated: true, hasMore: true, nextCursor: 'opaque' }
+  h.client.result = { url: 'https://example.test/', title: 'Article', text: 'next', offset: 4, totalChars: 20, returnedChars: 4, truncated: true, hasMore: true, nextCursor: 'opaque' }
   const result = await tool.execute({ cursor: 'previous', maxChars: 4 }, h.exec)
   assert.equal(h.calls[0].payload.cursor, 'previous')
-  assert.match(tool.output.render({}, result)[0].text, /more available; call browser_use_read with nextCursor/)
+  assert.match(tool.output.render({}, result)[0].text, /More available\. Call browser_use_read with cursor: opaque/)
+})
+
+test('a model can continue from the rendered cursor and every real read result matches its schema', async t => {
+  const host = await createHostHarness(t)
+  const h = await fixture(t)
+  h.register()
+  h.client.call = async (op, payload) => {
+    const response = await host.run(op, payload.conversationId, payload)
+    assert.equal(response.ok, true, response.error)
+    return response.result
+  }
+  await host.run('state', 'trusted-chat')
+  const root = host.natives[0].page.element
+  root.innerText = 'article😀tail'
+  const tool = h.definitions.get('browser_use_read')
+  const first = await tool.execute({ selector: 'article', maxChars: 7 }, h.exec)
+  assertOutput(tool.output.schema, first)
+  const rendered = tool.output.render({}, first)[0].text
+  const cursor = rendered.match(/with cursor: ([A-Za-z0-9_.-]+)/)?.[1]
+  assert.equal(cursor, first.nextCursor)
+  const second = await tool.execute({ cursor, maxChars: 20 }, h.exec)
+  assertOutput(tool.output.schema, second)
+  assert.equal(first.text + second.text, root.innerText)
+  assert.equal(second.offset, first.returnedChars)
+  assert.equal(second.hasMore, false)
+  assert.equal(Object.hasOwn(second, 'nextCursor'), false)
+  assert.equal(Object.hasOwn(second, 'fingerprint'), false)
+  assert.match(tool.output.render({}, second)[0].text, /End of selected text/)
+  root.innerText = ''
+  const empty = await tool.execute({ selector: 'article' }, h.exec)
+  assertOutput(tool.output.schema, empty)
+  assert.equal(empty.offset, 0)
+  assert.equal(empty.returnedChars, 0)
+})
+
+test('scoped snapshot and fast type forward options and match actual host output schemas', async t => {
+  const host = await createHostHarness(t)
+  const h = await fixture(t)
+  h.register()
+  h.client.call = async (op, payload) => {
+    const response = await host.run(op, payload.conversationId, payload)
+    assert.equal(response.ok, true, response.error)
+    return response.result
+  }
+  await host.run('state', 'trusted-chat')
+  const page = host.natives[0].page
+  page.element.querySelectorAll = () => []
+  const snapshot = h.definitions.get('browser_use_snapshot')
+  const result = await snapshot.execute({ selector: '#field', maxElements: 1, includeSelectors: false }, h.exec)
+  assertOutput(snapshot.output.schema, result)
+  assert.equal(result.elements.length, 1)
+  assert.equal(result.selector, '#field')
+  assert.equal(result.truncated, false)
+  assert.equal(result.elements[0].selector, undefined)
+  assert.equal(snapshot.isConcurrencySafe(), false)
+  const input = h.definitions.get('browser_use_type')
+  const typed = await input.execute({ ref: result.elements[0].ref, text: 'hello😀', mode: 'fast' }, h.exec)
+  assertOutput(input.output.schema, typed)
+  assert.equal(typed.typed, 6)
+  assert.equal(page.element.value, 'hello😀')
 })
 
 test('hover forwards only its ref and trusted routing and reports dispatch rather than menu success', async t => {

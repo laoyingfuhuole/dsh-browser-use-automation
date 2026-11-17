@@ -4,24 +4,25 @@
 
 ## 当前版本
 
-`v0.4.1`（当前版本）。`browser_use_*` 工具名、`BROWSER_USE_*` 环境变量与错误码保持稳定。
+`v0.4.2`（当前版本）。`browser_use_*` 工具名、`BROWSER_USE_*` 环境变量与错误码保持稳定。
 
 ## 功能迭代
 
+- `v0.4.2`：`browser_use_snapshot` 支持按 `selector` 限定区域、`maxElements` 限制数量（1–150）与 `includeSelectors` 精简输出，并在结果中标明范围与截断；`browser_use_type` 新增 `mode: human|fast`，fast 每块最多 256 个 Unicode 码点、逐块复核节点与焦点；`browser_use_read` 返回 `offset`/`nextCursor` 续读进度，游标过期与预算不足明确报错。
 - `v0.4.1`：`browser_use_read` 支持页面版本绑定的 `nextCursor` 续读；超长 eval 返回添加安全上限及截断提示；运行时完整性校验仅阻断执行文件，发布校验继续覆盖完整包；统一 `type` / `insertText` 输入计数为 Unicode 码点。
 - `v0.4.0`：新增 `browser_use_hover`（按 ref 悬停）、`browser_use_scroll`（真实滚轮事件，支持横向）、`browser_use_key`（受限功能键与修饰键组合）与 `browser_use_read`（带长度预算与截断提示的正文读取）；补充 `node:test` 回归测试、语法检查脚本与跨平台 CI 工作流。
 - `v0.3.1`：修复 Windows 启动前导 CRLF 导致的握手失败；新增只读 Electron 就绪诊断 `npm run check:runtime`；Windows 点 X 关闭当前对话窗口，最后一个原生窗口关闭后刷新共享存储并退出 host；macOS 保持 X 隐藏、Cmd+Q 退出整个浏览器 host。项目仅保留本篇中文 README。
 - `v0.3.0`：从一个离屏窗口改为**每个对话一个独立窗口**，按对话 ID 路由，工具不能跨对话选窗口；新增 `browser_use_insert_text`、`browser_use_reset`，`browser_use_close` 只关闭当前对话窗口；所有窗口共享 `session.defaultSession`（Cookie、localStorage、IndexedDB），页面与 sessionStorage 独立；新增发布文件完整性校验（`integrity.json` + SHA-256）。
 - `v0.2.0`：重建基础版本——单窗口离屏后台运行、CDP 驱动、编号快照 ref、截图、`eval`、等待与断言、Dock 菜单，不抢焦点。
 
-macOS 真实 Electron 回归已覆盖主要路径；Windows 新修复已通过平台模拟测试，仍需用匹配版本、无 shim 的 Electron 在 Windows 实机复验。真实 DSH UI 双对话验收仍待完成。对外使用 `vX.Y.Z` 标签，package.json 使用标准数字版本 `0.4.1`。
+macOS 真实 Electron 回归已覆盖主要路径；Windows 新修复已通过平台模拟测试，仍需用匹配版本、无 shim 的 Electron 在 Windows 实机复验。真实 DSH UI 双对话验收仍待完成。对外使用 `vX.Y.Z` 标签，package.json 使用标准数字版本 `0.4.2`。
 
 ## 功能
 
 - 首次工具调用时才惰性启动真实 Electron/Chromium 窗口。
 - 窗口默认离屏停放；普通页面工具不主动激活窗口。Windows 保留任务栏预览，macOS 使用 Dock 编号菜单。
 - 通过 Chrome DevTools Protocol 驱动页面：真实鼠标/滚轮事件、有限键盘事件、`Input.insertText`、`Input.dispatchKeyEvent`、`Page.captureScreenshot`、`Runtime.evaluate`。
-- 在页面内绘制光标（箭头 + 动作气泡、点击涟漪），逐字符输入，动作可见但不依赖系统指针。
+- 在页面内绘制光标（箭头 + 动作气泡、点击涟漪）；输入可选逐字符或受控快速分块，动作不依赖系统指针。
 - `browser_use_snapshot` 返回编号元素 ref；ref 只在当次快照内有效。
 - DSH 界面在后台时仍可工作；不移除 display surface，因此 CDP 输入不会被丢弃。
 
@@ -30,12 +31,12 @@ macOS 真实 Electron 回归已覆盖主要路径；Windows 新修复已通过�
 | 工具 | 用途 |
 | --- | --- |
 | `browser_use_open` | 打开 http(s) URL 并返回快照 |
-| `browser_use_snapshot` | 返回编号的可交互元素 |
+| `browser_use_snapshot` | 返回编号的可交互元素，可限定区域、数量及 selector 展示 |
 | `browser_use_click` | 按快照 ref 执行真实鼠标点击 |
 | `browser_use_hover` | 按 ref 悬停，只移动页面指针、不点击 |
 | `browser_use_scroll` | 在页面 CSS 视口坐标发送真实滚轮事件，垂直/水平 |
 | `browser_use_key` | 发送受限功能键与修饰键组合，并尝试释放按下的键 |
-| `browser_use_type` | 聚焦元素、绘制光标、逐字符输入 |
+| `browser_use_type` | 聚焦 ref 元素并追加文本，支持 human / fast 模式 |
 | `browser_use_insert_text` | 在当前选区插入文本，无需快照 ref |
 | `browser_use_screenshot` | 保存 JPEG 并返回路径 |
 | `browser_use_eval` | 执行页面 JavaScript |
@@ -57,6 +58,26 @@ macOS 真实 Electron 回归已覆盖主要路径；Windows 新修复已通过�
 
 `browser_use_assert` 至少需要一个非空字符串条件；仅传空参数或空白内容会报参数错误，不再视为通过。多个有效条件按 AND 判断。工具注册失败会带工具名报错，不继续悄悄加载不完整的工具集合。`browser_use_close` 返回后，下次调用会在同一 host 中新建此对话的窗口，保留共享登录数据。
 
+### 减少重复读取与快速输入
+
+`browser_use_open`、`browser_use_back` 和 `browser_use_reload` 已返回快照及 refs，优先直接使用，不要紧接着再次 snapshot。确需刷新时，可只读取相关弹窗或表单：
+
+```json
+{ "selector": "[role=dialog]", "maxElements": 20, "includeSelectors": false }
+```
+
+以上是 `browser_use_snapshot` 参数。`selector` 选择第一个匹配区域（根节点若可交互也包含在内），省略时仍读顶层文档；`maxElements` 为 1–150 的整数，默认 150；`includeSelectors` 默认 true，false 时仅省略每项诊断 CSS 选择器，不影响 ref 操作。结果含 `maxElements` 和可选的区域 `selector`，超过预算会提示 `truncated`。未匹配、非法选择器或预算明确报错。每次新快照都替换本对话全部 refs，包括此前其他区域的 refs；区域快照不是多个独立 ref 集合，也不是分页读取。快照按不可并发动作调度，host 仍按本对话串行执行。
+
+长文本可在 `browser_use_type` 中显式使用快速模式：
+
+```json
+{ "ref": 151, "text": "要追加的文本", "mode": "fast" }
+```
+
+`mode` 只支持 `human`（默认）和 `fast`。原有 human 保持逐 Unicode 码点输入及约 18 ms 间隔；fast 每块最多 256 个 Unicode 码点，不加人为延迟，每块前仍校验原 DOM 节点、可编辑性、遮挡及焦点。两者都在当前选区插入，不自动清空或替换字段；`typed` 是已确认派发的码点数，不保证站点最终接受了全部文本，完成后应检查实际字段。需要逐字事件的站点继续使用 human。
+
+fast 遇到目标被移除、焦点变化、取消或 CDP 失败时停止后续块，不自动重试。host 错误会附已获 CDP 确认的输入进度；在途块仍可能完成，不能据该进度直接补输剩余内容。客户端先超时/取消时没有最终进度，只明确提醒可能部分插入或仍在执行，必须先检查页面。正在执行的 CDP 调用仍占用该窗口队列；其他对话不受影响。
+
 ### 正文读取与交互快照的区别
 
 - `browser_use_snapshot` 用于找可点击、可输入的元素，返回最多 150 个编号 ref；它不是正文读取器。
@@ -69,8 +90,11 @@ macOS 真实 Electron 回归已覆盖主要路径；Windows 新修复已通过�
 | --- | --- |
 | `selector` | 可选非空 CSS 选择器，默认 body；非法选择器、未匹配或非 HTML 目标明确报错 |
 | `maxChars` | 可选整数，默认 6000，范围 1–24000；非法值报错，不静默修正 |
+| `cursor` | 续读时原样传回上一段的 nextCursor；可省略 selector 以沿用原区域，显式传入则必须相同 |
 
-结果包含 `url`、`title`、`text`、`totalChars`、`returnedChars`、`truncated`、`hasMore` 和可选 `nextCursor`。长度按 JavaScript UTF-16 单元计，截断不拆开 emoji 等字符的代理对，因此实际返回长度可能略小于预算。`hasMore: true` 时，把不透明的 `nextCursor` 原样传回同一页面和 selector 可继续读取；cursor 不包含正文，只绑定页面版本、selector、下一个位置和正文指纹。导航、selector 变化或正文变化后会明确报 stale cursor，不会把不同版本正文拼在一起。
+结果包含 `url`、`title`、`text`、`offset`、`totalChars`、`returnedChars`、`truncated`、`hasMore` 和可选 `nextCursor`。`offset` 为本段起点，模型文本会显示实际起止范围和完整游标，避免知道“还有内容”却无法续读。末页 `hasMore: false`，省略 nextCursor（不返回 null）；内部正文指纹不作为公共字段返回，结果与工具 schema 一致。
+
+长度按 JavaScript UTF-16 单元计，截断不拆开 emoji 等字符的代理对，因此实际返回长度可能略小于预算。预算为 1 且下一个字符需要两个单元时会明确要求增大预算，不返回重复的零进度游标。`hasMore: true` 时，把 nextCursor 原样传回即可继续，可重新指定 maxChars；不自动读取剩余内容。游标不保存正文，以每代窗口独立的 HMAC 绑定读取位置、页面版本、区域和正文指纹；跨对话、close/reset、host 重启或令牌被改动都会拒绝。导航或正文变化同样要求重新读取。旧版本的游标不兼容，应重新开始读取。
 
 读取采用浏览器 `innerText` 的渲染文本语义，包括视口之外已渲染的内容，不自动滚动、不改变表单或刷新 snapshot refs。隐藏或无布局的读取根节点返回空文本，避免 `innerText` 在隐藏根上回退为隐藏内容；这不是像素级可见性检测，透明后代、被覆盖文本等仍可能出现在 `innerText` 中。不存在 body 时明确报错；空区域返回空文本而不是伪造内容。
 
@@ -186,7 +210,9 @@ npm test -- --test-name-pattern="startup|cancel"
 - **客户端**：惰性/共享启动、ready 拆包及认证、路由捕获、响应拆包/粘包、取消/超时/迟到响应、写入失败、断连和旧生命周期清理。
 - **host**：隔离 Electron 环境下验证对话路由、操作队列、取消、ref 失效、滚轮坐标/限幅、键盘映射和 keyDown/keyUp 清理以及显式 close/reset；模拟测试不证明原生窗口或真实 CDP 的平台行为。
 - **正文读取**：预算/截断、区域和错误输入、代理对边界、隐藏根、对话隔离、导航变化及读取后继续使用原 ref；最小 DOM 夹具不代替真实 Chromium 排版验收。
-- **工具契约**：工具注册、可信对话 ID 和 signal 转发、reset 严格确认、非空断言及 AND 语义、截图字节与路径输出。
+- **续读链路**：实际 host 输出与 schema 对齐、从 render 文本取得游标并继续原区域、末页/空页、篡改/跨窗口/重建失效、emoji 小预算保证前进。
+- **快速输入/区域快照**：分块数量和文本一致、焦点变化/取消/错误后的部分进度、不重试；区域根节点、数量和 selector 省略、全局 refs 更新及截断边界。
+- **工具契约**：工具注册、可信对话 ID 和 signal 转发、reset 严格确认、非空断言及 AND 语义、截图字节与路径输出；跨层 schema 检查不等于真实 DSH UI/SDK 验收。
 - **安装完整性**：在独立临时包中检查运行文件改动/缺失、清单变更、非法清单和版本混装；运行时校验只阻断执行文件，发布校验仍覆盖完整包。
 
 [CI 工作流](.github/workflows/ci.yml) 在 push、pull request 和手动触发时，对 Ubuntu/Windows/macOS × Node 22.19.0/24 运行测试、语法检查、发布清单和安装自检，另检查 npm 打包内容。CI 不执行依赖安装、不下载 Electron、不启动 DSH，也不会自动生成清单来掩盖陈旧清单；修改发布文件后仍需维护者主动运行 `npm run prepare:release`。工作流提交并推送后才会产生远端结果，本地通过不能视为远端矩阵已经通过。
@@ -195,12 +221,12 @@ npm test -- --test-name-pattern="startup|cancel"
 
 ## 浏览器窗口
 
-- 初始以 `show: false` 创建，再用 `showInactive()` 非激活显示并离屏停放；普通工具不会抬起窗口。
+- 初始以 `show: false` 创建；macOS/Linux 从构造时即不可聚焦，首次加载前就启用鼠标穿透，首次显示前先透明，再用 `showInactive()` 保留后台绘制表面。普通工具不会抬起窗口。
 - macOS/Linux 保留 opacity 0、不可聚焦、点击穿透的后台策略。macOS Dock 菜单按窗口编号提供查看入口；点击图标显示最近使用的已就绪窗口，不额外创建窗口。
 - Windows 使用同一个 AppUserModelID，并为每个对话保留任务栏窗口条目，不创建托盘图标。在系统启用任务栏合并及缩略图时，悬停分组图标可选择各编号窗口；点击预览激活对应窗口，将它移回屏内。
 - 为避免透明窗口缩略图空白，Windows 后台保持不透明绘制面、可激活和点击穿透，但先移到所有显示器范围之外，再非激活显示。切出或隐藏后仍保留任务栏条目。人工查看时尺寸采用配置值，并限制在主显示器工作区内。
 - Windows 点击 X 真正销毁当前对话窗口，取消它正在执行及排队的请求，不影响其他对话；点掉最后一个原生窗口后刷新共享 Cookie/存储并退出空 host。下次工具调用可重新启动，但未提交表单、DOM 和页面现场不会恢复。该显式关闭直接销毁页面，不等待网页的 `beforeunload` 确认。
-- macOS 点 X 仅隐藏当前窗口，Cmd+Q 退出整个浏览器 host；Linux 沿用原有关闭隐藏行为。切换应用会回到后台，页面继续存活。被系统最小化时会非激活恢复并重新离屏停放。
+- macOS 点 X 仅隐藏当前窗口，Cmd+Q 退出整个浏览器 host；Linux 沿用原有关闭隐藏行为。切换应用会回到后台，页面继续存活。回后台时显式释放原生键盘焦点；macOS/Linux 被系统最小化后，先禁止聚焦、透明并离屏停放，再恢复窗口，避免可聚焦的恢复过程短暂打断其他应用输入。Windows 保留任务栏恢复分支。
 - 工具 `browser_use_close` / `browser_use_reset` 仍只作用于指定对话，按原协议保留共享 host 以便重建；不按轮次、空闲或后台状态自动清理窗口。工具不会主动抬起窗口。
 - `BROWSER_USE_HIDE_DOCK=1` 隐藏 Dock 图标；`BROWSER_USE_KEEP_DOCK=1` 优先级更高，强制保留图标。
 
@@ -241,8 +267,9 @@ host/main.cjs             对话窗口映射、共享 Session、独立 CDP 与�
 - 每个对话只有一个窗口/页面；`browser_use_open` 只替换本对话页面。网页弹出的 HTTP(S) 链接仍在所属窗口打开，不创建额外无人管理的窗口。
 - 快照不包含 iframe 和 shadow root；光标只注入顶层文档。
 - 截图只截当前视口，不是整页滚动截图；`fullPage` 是预留参数，暂不生效。
-- 输入通过 `Input.insertText` 逐字符完成，字符间隔约 18 ms。
+- 输入通过 `Input.insertText` 完成；human 默认逐码点约 18 ms 间隔，fast 为显式选择的受控分块。快速模式的站点兼容性需按页面实际事件行为验证。
 - macOS 已做真实 Electron 回归；Windows 任务栏策略已做平台模拟测试，仍需在 Windows 实机验收缩略图内容、预览点击和多屏行为。Linux 未做实机验证。
+- 输入中断的焦点时序修复已覆盖创建/首次加载/显示、人工查看回后台及最小化恢复的模拟回归；隔离 macOS Electron 实测普通 CDP 操作期间未切换前台应用。该结果不等于已复现所有输入法、桌面空间和用户现场的间歇性输入中断。
 - 多显示器下，Mission Control 可能显示空白 tile；窗口保持透明且点击穿透，但尚无原生 z-order（`orderBack`）。
 - Windows 任务栏分组和缩略图由系统设置/策略控制；禁用合并时可能显示多个按钮。若系统将窗口夹回屏内，代码回退到透明状态，预览可能空白，避免直接显示后台页面。任务栏预览或按窗口采集可能暴露页面内容，后台状态不是隐私保护。
 - 没有客户端设置面板，通过 bundle 行启停插件。

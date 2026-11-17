@@ -25,6 +25,7 @@ function createPage() {
     tagName: 'INPUT', type: 'text', id: 'field', value: '', isConnected: true,
     ownerDocument: document, style: {},
     getAttribute(name) { return name === 'name' ? 'field' : null },
+    matches() { return true },
     getBoundingClientRect() { return { left: 10, top: 20, width: 100, height: 30 } },
     scrollIntoView() {}, contains(node) { return node === this }, closest() { return null },
     focus() { document.activeElement = this },
@@ -52,6 +53,7 @@ export async function createHostHarness(t, { platform = 'linux', authenticate = 
   const app = Object.assign(new EventEmitter(), {
     quitCalls: 0, quit() { this.quitCalls++ },
     whenReady: () => Promise.resolve(), setAppUserModelId() {}, isActive: () => false,
+    focusCalls: 0, focus() { this.focusCalls++ },
   })
   const defaultSession = { flushes: 0, flushStorageData() { this.flushes++ }, cookies: { async flushStore() {} } }
   class BrowserWindow extends EventEmitter {
@@ -67,6 +69,9 @@ export async function createHostHarness(t, { platform = 'linux', authenticate = 
       this.destroyed = false
       this.opacity = 1
       this.focusCalls = 0
+      this.focusable = options.focusable ?? true
+      this.mouseIgnored = false
+      this.lifecycleCalls = []
       const contents = Object.assign(new EventEmitter(), { setWindowOpenHandler(handler) { this.openHandler = handler } })
       contents.debugger = {
         attach() {},
@@ -101,27 +106,37 @@ export async function createHostHarness(t, { platform = 'linux', authenticate = 
       this.webContents = contents
       natives.push(this)
     }
-    async loadURL(url) { this.page.location.href = url }
+    async loadURL(url) {
+      this.lifecycleCalls.push({ action: 'loadURL', focusable: this.focusable, mouseIgnored: this.mouseIgnored })
+      this.page.location.href = url
+    }
     isDestroyed() { return this.destroyed }
     destroy() { if (this.destroyed) return; this.destroyed = true; this.emit('closed'); this.webContents.emit('destroyed') }
     isVisible() { return this.visible }
     isFocused() { return this.focused }
     isMinimized() { return false }
     getOpacity() { return this.opacity }
-    setOpacity(value) { this.opacity = value }
+    setOpacity(value) { this.opacity = value; this.lifecycleCalls.push({ action: 'opacity', value }) }
     setPosition(x, y) { Object.assign(this.bounds, { x, y }) }
     getBounds() { return { ...this.bounds } }
     setBounds(bounds) { this.bounds = bounds }
     getTitle() { return this.options.title }
     setSkipTaskbar() {}
-    setFocusable() {}
-    setIgnoreMouseEvents() {}
+    setFocusable(value) { this.focusable = value; this.lifecycleCalls.push({ action: 'focusable', value }) }
+    setIgnoreMouseEvents(value) { this.mouseIgnored = value }
     setMinimizable() {}
-    showInactive() { this.visible = true }
+    showInactive() {
+      this.visible = true
+      this.lifecycleCalls.push({ action: 'showInactive', focusable: this.focusable, opacity: this.opacity })
+    }
     show() { this.visible = true }
     focus() { this.focusCalls++; this.focused = true }
-    blur() { this.focused = false }
-    restore() {}
+    blur() { this.focused = false; this.lifecycleCalls.push({ action: 'blur' }) }
+    restore() {
+      this.lifecycleCalls.push({ action: 'restore', focusable: this.focusable, opacity: this.opacity })
+      // 模拟可聚焦窗口在原生恢复时重新取得焦点；仅检查最终 focus 状态会漏掉这个瞬时回归。
+      if (this.focusable) this.focus()
+    }
   }
   const display = { workArea: { x: 0, y: 0, width: 1440, height: 900 }, bounds: { x: 0, y: 0, width: 1440, height: 900 } }
   const screen = Object.assign(new EventEmitter(), { getPrimaryDisplay: () => display, getAllDisplays: () => [display] })
@@ -172,7 +187,7 @@ export async function createHostHarness(t, { platform = 'linux', authenticate = 
     response(id) { return responses.find(item => item.id === id) },
     async run(op, conversationId = 'A', payload = {}) {
       const id = this.submit(op, conversationId, payload)
-      await flush()
+      for (let attempt = 0; attempt < 20 && !this.response(id); attempt++) await flush()
       const response = this.response(id)
       assert.ok(response, `missing response for ${op} ${id}`)
       return response

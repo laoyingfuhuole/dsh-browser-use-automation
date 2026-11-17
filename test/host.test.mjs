@@ -79,6 +79,62 @@ test('read cursor preserves surrogate pairs at page boundaries', async t => {
   assert.equal(second.hasMore, false)
 })
 
+test('read cursors are bound to the window generation and reject tampering', async t => {
+  const h = await createHostHarness(t)
+  await h.run('state', 'A')
+  await h.run('state', 'B')
+  for (const win of h.natives) win.page.document.body.innerText = 'same content'
+  const first = (await h.run('read', 'A', { maxChars: 4 })).result
+  assert.match((await h.run('read', 'B', { cursor: first.nextCursor })).error, /wrong window/)
+  const [payload, signature] = first.nextCursor.split('.')
+  const token = JSON.parse(Buffer.from(payload, 'base64url').toString('utf8'))
+  token.offset++
+  const changed = Buffer.from(JSON.stringify(token)).toString('base64url') + '.' + signature
+  assert.match((await h.run('read', 'A', { cursor: changed })).error, /invalid cursor/)
+  for (const cursor of ['', 'invalid', 'e30.bad', null, 1, 'x'.repeat(4097)]) {
+    assert.equal((await h.run('read', 'A', { cursor })).ok, false)
+  }
+  for (const op of ['close', 'reset']) {
+    const old = (await h.run('read', 'A', { maxChars: 4 })).result.nextCursor
+    await h.run(op, 'A')
+    await h.run('state', 'A')
+    h.natives.at(-1).page.document.body.innerText = 'same content'
+    assert.match((await h.run('read', 'A', { cursor: old })).error, /wrong window/)
+  }
+})
+
+test('read never returns a non-progressing cursor when the budget splits a surrogate pair', async t => {
+  const h = await createHostHarness(t)
+  await h.run('state')
+  h.natives[0].page.document.body.innerText = 'A😀B'
+  const first = (await h.run('read', 'A', { maxChars: 1 })).result
+  assert.equal(first.text, 'A')
+  const tooSmall = await h.run('read', 'A', { cursor: first.nextCursor, maxChars: 1 })
+  assert.match(tooSmall.error, /increase maxChars to at least 2/)
+  const second = (await h.run('read', 'A', { cursor: first.nextCursor, maxChars: 2 })).result
+  assert.equal(second.text, '😀')
+  const third = (await h.run('read', 'A', { cursor: second.nextCursor, maxChars: 1 })).result
+  assert.equal(first.text + second.text + third.text, 'A😀B')
+  assert.equal(third.hasMore, false)
+  assert.equal(third.nextCursor, undefined)
+  h.natives[0].page.document.body.innerText = '😀'
+  assert.match((await h.run('read', 'A', { maxChars: 1 })).error, /too small/)
+})
+
+test('read continues the original region without resending its selector and survives a new snapshot', async t => {
+  const h = await createHostHarness(t)
+  await h.run('state')
+  h.natives[0].page.element.innerText = 'abcdef'
+  const first = (await h.run('read', 'A', { selector: '#field', maxChars: 2 })).result
+  await h.run('snapshot')
+  const second = (await h.run('read', 'A', { cursor: first.nextCursor, maxChars: 3 })).result
+  assert.equal(second.text, 'cde')
+  assert.equal(second.offset, 2)
+  const last = (await h.run('read', 'A', { cursor: second.nextCursor, selector: '#field' })).result
+  assert.equal(last.text, 'f')
+  assert.equal(last.hasMore, false)
+})
+
 test('eval caps serialized results without disconnecting the shared host and preserves short values', async t => {
   const h = await createHostHarness(t)
   const large = await h.run('eval', 'A', { expression: '"x".repeat(1000001)' })
@@ -318,6 +374,65 @@ test('request deadline cancels without automatically destroying the blocked wind
   assert.equal(h.responses.filter(item => item.id === id).length, 1)
 })
 
+test('scoped snapshots restrict output, honor budgets and replace the old global ref map', async t => {
+  const h = await createHostHarness(t)
+  const oldRef = (await h.run('snapshot')).result.elements[0].ref
+  const page = h.natives[0].page
+  const fields = Array.from({ length: 151 }, (_, index) => Object.assign(Object.create(page.element), {
+    id: `field-${index}`, innerText: `field ${index}`,
+  }))
+  const root = { matches: () => false, querySelectorAll: () => fields.slice(100, 103) }
+  page.document.querySelectorAll = () => fields
+  page.document.querySelector = selector => selector === '#dialog' ? root : null
+  const full = (await h.run('snapshot')).result
+  assert.equal(full.elements.length, 150)
+  assert.equal(full.truncated, true)
+  const small = (await h.run('snapshot', 'A', { selector: '#dialog', maxElements: 2, includeSelectors: false })).result
+  assert.equal(small.elements.length, 2)
+  assert.equal(small.elements[0].label, 'field 100')
+  assert.equal(small.elements[0].selector, undefined)
+  assert.equal(small.truncated, true)
+  assert.equal(small.maxElements, 2)
+  assert.equal(small.selector, '#dialog')
+  assert.ok(JSON.stringify(small).length < JSON.stringify(full).length / 10)
+  assert.match((await h.run('click', 'A', { ref: oldRef })).error, /stale/)
+  const id = h.submit('click', 'A', { ref: small.elements[0].ref })
+  page.document.elementFromPoint = () => fields[100]
+  await h.flush()
+  h.fire(160)
+  await h.flush()
+  assert.equal(h.response(id).ok, true)
+  const exact = (await h.run('snapshot', 'A', { selector: '#dialog', maxElements: 3 })).result
+  assert.equal(exact.truncated, false)
+  const emptyRoot = { matches: () => false, querySelectorAll: () => [] }
+  page.document.querySelector = () => emptyRoot
+  assert.equal((await h.run('snapshot', 'A', { selector: '#empty' })).result.elements.length, 0)
+})
+
+test('snapshot validates options and includes an interactive scope root', async t => {
+  const h = await createHostHarness(t)
+  await h.run('state')
+  const page = h.natives[0].page
+  page.element.querySelectorAll = () => []
+  const result = (await h.run('snapshot', 'A', { selector: '#field', maxElements: 1 })).result
+  assert.equal(result.elements.length, 1)
+  assert.equal(result.truncated, false)
+  const literal = '[data-label="$&\\\\literal"]'
+  page.document.querySelector = selector => {
+    assert.equal(selector, literal)
+    return page.element
+  }
+  assert.equal((await h.run('snapshot', 'A', { selector: literal })).ok, true)
+  for (const args of [
+    { selector: '' }, { selector: null }, { maxElements: 0 }, { maxElements: 151 },
+    { maxElements: 1.5 }, { maxElements: '2' }, { includeSelectors: 'false' },
+  ]) assert.equal((await h.run('snapshot', 'A', args)).ok, false)
+  page.document.querySelector = () => null
+  assert.match((await h.run('snapshot', 'A', { selector: '#missing' })).error, /did not match/)
+  page.document.querySelector = () => { throw new Error('invalid CSS') }
+  assert.match((await h.run('snapshot', 'A', { selector: '[' })).error, /invalid CSS/)
+})
+
 test('new snapshot invalidates old refs and refs cannot cross conversation windows', async t => {
   const h = await createHostHarness(t)
   const a = (await h.run('snapshot', 'A')).result.elements[0].ref
@@ -484,6 +599,101 @@ test('type and insertText count Unicode code points consistently', async t => {
   await h.flush()
   assert.equal(inserted.result.typed, 3)
   assert.equal(h.response(id).result.typed, 3)
+})
+
+test('fast ref input appends 2000 code points in eight bounded CDP chunks without delay', async t => {
+  const h = await createHostHarness(t)
+  const ref = (await h.run('snapshot')).result.elements[0].ref
+  const win = h.natives[0]
+  const text = 'a😀'.repeat(1000)
+  win.page.element.value = 'prefix'
+  const result = await h.run('type', 'A', { ref, text, mode: 'fast' })
+  assert.equal(result.ok, true, result.error)
+  assert.equal(result.result.typed, 2000)
+  assert.equal(win.page.element.value, 'prefix' + text)
+  const chunks = win.commands.filter(item => item.method === 'Input.insertText')
+  assert.equal(chunks.length, 8)
+  for (const chunk of chunks) assert.ok(Array.from(chunk.params.text).length <= 256)
+  assert.equal(h.timeouts.size, 0)
+  assert.equal(win.focusCalls, 0)
+  assert.equal((await h.run('type', 'A', { ref, text: '', mode: 'fast' })).result.typed, 0)
+  assert.match((await h.run('type', 'A', { ref, text, mode: 'invalid' })).error, /mode/)
+  assert.equal(commandCount(win, 'Input.insertText'), 8)
+})
+
+test('fast ref input stops at a focus change and reports confirmed partial progress', async t => {
+  const h = await createHostHarness(t)
+  const ref = (await h.run('snapshot')).result.elements[0].ref
+  const win = h.natives[0]
+  win.onCommand = method => {
+    if (method === 'Input.insertText') {
+      win.page.document.activeElement = null
+      return Promise.resolve({})
+    }
+  }
+  const result = await h.run('type', 'A', { ref, text: 'x'.repeat(600), mode: 'fast' })
+  assert.match(result.error, /input focus changed/)
+  assert.match(result.error, /256\/600 Unicode code points acknowledged/)
+  assert.equal(win.page.element.value, 'x'.repeat(256))
+  assert.equal(commandCount(win, 'Input.insertText'), 1)
+})
+
+test('fast input cancellation retains the in-flight barrier and never retries the remainder', async t => {
+  const h = await createHostHarness(t)
+  const ref = (await h.run('snapshot')).result.elements[0].ref
+  const win = h.natives[0]
+  const gate = deferred()
+  let calls = 0
+  win.onCommand = method => {
+    if (method === 'Input.insertText' && ++calls === 2) return gate.promise
+  }
+  const id = h.submit('type', 'A', { ref, text: 'x'.repeat(700), mode: 'fast' })
+  const queued = h.submit('state')
+  await h.flush()
+  assert.equal(win.page.element.value.length, 256)
+  h.cancel(id)
+  assert.match(h.response(id).error, /256\/700.*in-flight chunk may still complete/)
+  assert.equal(h.response(queued), undefined)
+  assert.equal((await h.run('state', 'B')).ok, true)
+  gate.resolve({})
+  await h.flush()
+  assert.equal(h.response(queued).ok, true)
+  assert.equal(win.page.element.value.length, 512)
+  assert.equal(commandCount(win, 'Input.insertText'), 2)
+  assert.equal(h.responses.filter(item => item.id === id).length, 1)
+})
+
+test('fast input CDP errors retain confirmed progress and do not hide uncertain effects', async t => {
+  const h = await createHostHarness(t)
+  const ref = (await h.run('snapshot')).result.elements[0].ref
+  const win = h.natives[0]
+  let calls = 0
+  win.onCommand = method => {
+    if (method === 'Input.insertText' && ++calls === 2) return Promise.reject(new Error('CDP failure'))
+  }
+  const result = await h.run('type', 'A', { ref, text: 'x'.repeat(600), mode: 'fast' })
+  assert.match(result.error, /CDP failure.*256\/600.*in-flight chunk may still complete/)
+  assert.equal(commandCount(win, 'Input.insertText'), 2)
+  assert.equal(win.page.element.value.length, 256)
+})
+
+test('fast input stops after node removal or navigation instead of using a replacement', async t => {
+  for (const change of ['removed', 'navigation']) {
+    const h = await createHostHarness(t)
+    const ref = (await h.run('snapshot')).result.elements[0].ref
+    const win = h.natives[0]
+    win.onCommand = method => {
+      if (method === 'Input.insertText') {
+        if (change === 'removed') win.page.element.isConnected = false
+        else win.webContents.emit('did-start-navigation', { isMainFrame: true })
+        return Promise.resolve({})
+      }
+    }
+    const result = await h.run('type', 'A', { ref, text: 'x'.repeat(700), mode: 'fast' })
+    assert.match(result.error, /removed|stale/)
+    assert.match(result.error, /256\/700 Unicode code points acknowledged/)
+    assert.equal(commandCount(win, 'Input.insertText'), 1)
+  }
 })
 
 test('scroll dispatches a real wheel event at viewport coordinates and validates bounds', async t => {
@@ -674,6 +884,13 @@ for (const platform of ['darwin', 'win32', 'linux']) {
     assert.equal((await h.run('state')).ok, true)
     const win = h.natives[0]
     assert.equal(win.focusCalls, 0)
+    assert.equal(win.options.focusable, platform === 'win32')
+    const initialLoad = win.lifecycleCalls.find(call => call.action === 'loadURL')
+    assert.equal(initialLoad.focusable, platform === 'win32')
+    assert.equal(initialLoad.mouseIgnored, true)
+    const initialShow = win.lifecycleCalls.find(call => call.action === 'showInactive')
+    assert.equal(initialShow.focusable, platform === 'win32')
+    assert.equal(initialShow.opacity, platform === 'win32' ? 1 : 0)
     assert.equal(win.options.webPreferences.session, h.defaultSession)
     assert.equal(win.options.webPreferences.backgroundThrottling, false)
     assert.equal(win.visible, true)
@@ -692,3 +909,56 @@ for (const platform of ['darwin', 'win32', 'linux']) {
     }
   })
 }
+
+test('macOS returning a focused inspection window to background releases native keyboard focus', async t => {
+  const h = await createHostHarness(t, { platform: 'darwin' })
+  await h.run('state')
+  const win = h.natives[0]
+  assert.equal((await h.run('windowShow')).result.shown, true)
+  assert.equal(win.focused, true)
+  assert.equal(win.focusable, true)
+  assert.equal(win.mouseIgnored, false)
+  const before = win.lifecycleCalls.length
+  assert.equal((await h.run('windowHide')).result.hidden, true)
+  assert.equal(win.focused, false)
+  assert.equal(win.focusable, false)
+  assert.equal(win.mouseIgnored, true)
+  assert.equal(win.opacity, 0)
+  assert.equal(win.lifecycleCalls[before].action, 'blur')
+  assert.equal((await h.run('windowShow')).result.shown, true, 'explicit inspection must remain available')
+})
+
+for (const platform of ['darwin', 'linux']) {
+  test(`minimize recovery disarms a focusable inspection window before native restore (${platform})`, async t => {
+    const h = await createHostHarness(t, { platform })
+    await h.run('state')
+    await h.run('windowShow')
+    const win = h.natives[0]
+    const focusCalls = win.focusCalls
+    win.emit('minimize')
+    h.fire(50)
+    await h.flush()
+    const restored = win.lifecycleCalls.find(call => call.action === 'restore')
+    assert.equal(restored.focusable, false)
+    assert.equal(restored.opacity, 0)
+    assert.equal(win.focusCalls, focusCalls, 'automatic recovery must not invoke a focusable native restore')
+    assert.equal(win.focused, false)
+    assert.equal(win.mouseIgnored, true)
+  })
+}
+
+test('ordinary CDP input does not activate an app or re-enable native window focus on macOS', async t => {
+  const h = await createHostHarness(t, { platform: 'darwin' })
+  const ref = (await h.run('snapshot')).result.elements[0].ref
+  await h.run('hover', 'A', { ref })
+  await h.run('type', 'A', { ref, text: 'background input', mode: 'fast' })
+  await h.run('key', 'A', { key: 'Tab' })
+  await h.run('scroll')
+  const win = h.natives[0]
+  assert.equal(win.focusCalls, 0)
+  assert.equal(h.app.focusCalls, 0)
+  assert.equal(win.focused, false)
+  assert.equal(win.focusable, false)
+  assert.equal(win.mouseIgnored, true)
+  assert.equal(win.lifecycleCalls.some(call => call.action === 'focusable' && call.value === true), false)
+})
