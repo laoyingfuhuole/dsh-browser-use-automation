@@ -4,10 +4,11 @@
 
 ## 当前版本
 
-`v0.4.2`（当前版本）。`browser_use_*` 工具名、`BROWSER_USE_*` 环境变量与错误码保持稳定。
+`v0.5.0`（当前版本）。`browser_use_*` 工具名、`BROWSER_USE_*` 环境变量与错误码保持稳定。
 
 ## 功能迭代
 
+- `v0.5.0`：新增 `browser_use_downloads`——host 在共享 Session 上接管 `will-download`，在事件内同步指定保存路径，后台落盘且不弹系统保存框；每次下载独占 `download-*` 目录，按对话隔离记录进度与状态，close/reset 取消本对话活动下载但保留历史与文件。
 - `v0.4.2`：`browser_use_snapshot` 支持按 `selector` 限定区域、`maxElements` 限制数量（1–150）与 `includeSelectors` 精简输出，并在结果中标明范围与截断；`browser_use_type` 新增 `mode: human|fast`，fast 每块最多 256 个 Unicode 码点、逐块复核节点与焦点；`browser_use_read` 返回 `offset`/`nextCursor` 续读进度，游标过期与预算不足明确报错。
 - `v0.4.1`：`browser_use_read` 支持页面版本绑定的 `nextCursor` 续读；超长 eval 返回添加安全上限及截断提示；运行时完整性校验仅阻断执行文件，发布校验继续覆盖完整包；统一 `type` / `insertText` 输入计数为 Unicode 码点。
 - `v0.4.0`：新增 `browser_use_hover`（按 ref 悬停）、`browser_use_scroll`（真实滚轮事件，支持横向）、`browser_use_key`（受限功能键与修饰键组合）与 `browser_use_read`（带长度预算与截断提示的正文读取）；补充 `node:test` 回归测试、语法检查脚本与跨平台 CI 工作流。
@@ -15,7 +16,7 @@
 - `v0.3.0`：从一个离屏窗口改为**每个对话一个独立窗口**，按对话 ID 路由，工具不能跨对话选窗口；新增 `browser_use_insert_text`、`browser_use_reset`，`browser_use_close` 只关闭当前对话窗口；所有窗口共享 `session.defaultSession`（Cookie、localStorage、IndexedDB），页面与 sessionStorage 独立；新增发布文件完整性校验（`integrity.json` + SHA-256）。
 - `v0.2.0`：重建基础版本——单窗口离屏后台运行、CDP 驱动、编号快照 ref、截图、`eval`、等待与断言、Dock 菜单，不抢焦点。
 
-macOS 真实 Electron 回归已覆盖主要路径；Windows 新修复已通过平台模拟测试，仍需用匹配版本、无 shim 的 Electron 在 Windows 实机复验。真实 DSH UI 双对话验收仍待完成。对外使用 `vX.Y.Z` 标签，package.json 使用标准数字版本 `0.4.2`。
+macOS 真实 Electron 回归已覆盖主要路径；Windows 新修复已通过平台模拟测试，仍需用匹配版本、无 shim 的 Electron 在 Windows 实机复验。真实 DSH UI 双对话验收仍待完成。对外使用 `vX.Y.Z` 标签，package.json 使用标准数字版本 `0.5.0`。
 
 ## 功能
 
@@ -39,6 +40,7 @@ macOS 真实 Electron 回归已覆盖主要路径；Windows 新修复已通过�
 | `browser_use_type` | 聚焦 ref 元素并追加文本，支持 human / fast 模式 |
 | `browser_use_insert_text` | 在当前选区插入文本，无需快照 ref |
 | `browser_use_screenshot` | 保存 JPEG 并返回路径 |
+| `browser_use_downloads` | 查询本对话后台下载的保存路径、进度和最终状态 |
 | `browser_use_eval` | 执行页面 JavaScript |
 | `browser_use_wait` | 等待加载 / 选择器 / 文本 / URL |
 | `browser_use_assert` | 校验选择器、文本、URL 或 JS 真值 |
@@ -57,6 +59,19 @@ macOS 真实 Electron 回归已覆盖主要路径；Windows 新修复已通过�
 这两个工具按对话串行；独立对话仍可并行。滚动和按键可能触发站点行为，模型必须检查页面，避免不确定时重复提交。
 
 `browser_use_assert` 至少需要一个非空字符串条件；仅传空参数或空白内容会报参数错误，不再视为通过。多个有效条件按 AND 判断。工具注册失败会带工具名报错，不继续悄悄加载不完整的工具集合。`browser_use_close` 返回后，下次调用会在同一 host 中新建此对话的窗口，保留共享登录数据。
+
+### 后台下载（不弹系统保存框）
+
+host 在创建页面前对共享 Session 注册一次 `will-download`，在事件内同步指定保存路径，避免 Electron 默认弹出 macOS/Windows 的“另存为”对话框。此规则覆盖浏览器正常触发的附件、`download` 链接和 Blob 下载，不会自动打开保存后的文件。
+
+- 默认保存到 `$DSH_HOME/browser-use/downloads`（未设 DSH_HOME 时为 `~/.dsh/browser-use/downloads`）。可在启动 host 前用 `BROWSER_USE_DOWNLOAD_DIR` 指定绝对目录；非法路径明确报错，不自动改为其他目录。目录在首次下载时创建。
+- 每次下载分配独占的 `download-*` 子目录，文件名经清理及长度限制；同名/并发下载不会覆盖其他文件。不把对话 ID 写进文件名，不让模型任意选择覆盖路径。
+- `browser_use_downloads` 只返回当前对话记录，包含 `id`、`filename`、`state`、已收/总字节数及可选 `path`、`error`。查询不创建窗口，不受该页面队列卡住影响。只有 `completed` 且确认文件存在才表示可使用；`progressing` 或 `interrupted` 不表示成功，`cancelled` / `failed` 要检查原因。总字节数未知时可能为 0 或负值，不据此判断完成。
+- 历史保存在本次 host 内存中，每对话保留最多 50 条记录，优先淘汰已结束项；活动项不淘汰，活动数量超过 50 时可暂时超限。close/reset 保留历史和已有文件，但取消所属窗口仍在下载的文件，不影响其他对话。host 重启后历史不恢复，文件仍留在保存目录。
+- 工具取消/超时不回滚已经发起的下载，也不自动取消它；查询状态后再决定下一步，禁止自动重复点击下载按钮。close/reset 或插件卸载会取消活动下载，取消/失败可能留下部分文件，本插件不会自动删除用户已保存或未完成文件。
+- 路径准备失败时阻止该次下载并记录错误，不能回退到原生保存框；来源不属于存活对话窗口的下载直接拒绝并记录日志，不分配到其他对话。
+
+推荐流程：点击下载 → `browser_use_downloads` → 必要时再次查询，直到 `completed` 后使用返回路径。直接导航到附件 URL 仍可能报告“导航转为下载”，这是页面没有加载成功，不代表文件失败；应查询下载状态，不能自动重试导航或点击。网页使用 File System Access API 自行弹出的文件选择器、打印/另存网页等其他系统对话框不属于此下载事件路径，尚不承诺接管。
 
 ### 减少重复读取与快速输入
 
@@ -208,6 +223,7 @@ npm test -- --test-name-pattern="startup|cancel"
 测试执行真实客户端/工具模块及 host 源码，仅替换进程、TCP、Electron 或 DSH SDK 等外部边界。客户端和工具测试通过 `--experimental-vm-modules` 链接 ESM；Node 显示 VM Modules 实验性警告是预期行为，此标志仅用于测试。临时文件在测试后清理，夹具不操作真实浏览器数据。
 
 - **客户端**：惰性/共享启动、ready 拆包及认证、路由捕获、响应拆包/粘包、取消/超时/迟到响应、写入失败、断连和旧生命周期清理。
+- **后台下载**：事件同步分配路径、同名隔离、文件名清理、进度/完成文件验证、目录/保存失败、未知来源拒绝、记录限额及关闭/重置的跨对话隔离。另以独立资料目录的 Electron 本地服务验证附件和 Blob 自动落盘；不代表已验收所有网站的文件选择器。
 - **host**：隔离 Electron 环境下验证对话路由、操作队列、取消、ref 失效、滚轮坐标/限幅、键盘映射和 keyDown/keyUp 清理以及显式 close/reset；模拟测试不证明原生窗口或真实 CDP 的平台行为。
 - **正文读取**：预算/截断、区域和错误输入、代理对边界、隐藏根、对话隔离、导航变化及读取后继续使用原 ref；最小 DOM 夹具不代替真实 Chromium 排版验收。
 - **续读链路**：实际 host 输出与 schema 对齐、从 render 文本取得游标并继续原区域、末页/空页、篡改/跨窗口/重建失效、emoji 小预算保证前进。

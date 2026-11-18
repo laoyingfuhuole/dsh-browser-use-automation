@@ -319,6 +319,45 @@ export function registerTools(ctx, client, config = {}) {
   }))
 
   register(defineTool({
+    name: 'browser_use_downloads',
+    description: 'List this conversation’s browser downloads without opening a window or native save dialog. Downloads save automatically to unique directories; only state=completed confirms a saved file. progressing/interrupted is not completion; failed/cancelled includes an error. Query again when needed, never repeat the download click automatically. Host history retains 50 entries, pruning terminal entries first and always keeping active downloads. close/reset cancels active downloads but retains files and history.',
+    parameters: {},
+    output: {
+      schema: {
+        type: 'object',
+        additionalProperties: false,
+        properties: {
+          downloads: {
+            type: 'array', required: true,
+            items: {
+              type: 'object', additionalProperties: false,
+              properties: {
+                id: { type: 'string', required: true },
+                filename: { type: 'string', required: true },
+                state: { type: 'string', required: true },
+                path: { type: 'string' },
+                receivedBytes: { type: 'number', required: true },
+                totalBytes: { type: 'number', required: true },
+                error: { type: 'string' },
+              },
+            },
+          },
+        },
+      },
+      render: (_args, value) => [{
+        type: 'text',
+        text: value.downloads.length === 0 ? 'No downloads recorded for this conversation in this host.'
+          : value.downloads.map(item => `${item.id} ${item.state}: ${item.filename} (${item.receivedBytes}/${item.totalBytes} bytes)${item.path ? `\nPath: ${item.path}` : ''}${item.error ? `\nError: ${item.error}` : ''}`).join('\n\n'),
+      }],
+    },
+    timeoutMs: 10_000,
+    isConcurrencySafe: () => true,
+    async execute(_args, exec) {
+      return call('downloads', {}, exec)
+    },
+  }))
+
+  register(defineTool({
     name: 'browser_use_screenshot',
     description: 'Capture this conversation’s current viewport as a JPEG and save it under the DSH state directory. Returns the file path; use a vision-capable read tool on that path when pixels matter.',
     parameters: {

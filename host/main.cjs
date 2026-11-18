@@ -15,8 +15,8 @@
 const { app, BrowserWindow, Menu, screen, session } = require('electron')
 const { createServer } = require('node:net')
 const { randomBytes, createHmac } = require('node:crypto')
-const { mkdirSync } = require('node:fs')
-const { isAbsolute } = require('node:path')
+const { mkdirSync, mkdtempSync, statSync } = require('node:fs')
+const { isAbsolute, join, basename, win32 } = require('node:path')
 
 // 仅显式指定时改存储位置，且必须早于 ready；平时沿用现有默认资料和登录态。
 // BROWSER_USE_* 是既有配置协议；包改名不改环境变量和默认用户资料目录，保留登录。
@@ -55,6 +55,82 @@ const requests = new Map()
 const REQUEST_TIMEOUT_MS = 60_000
 const EVAL_RESULT_MAX_CHARS = 1_000_000
 const READ_MAX_CHARS = 24_000
+const downloadRecords = new Map()
+const downloadOwners = new Map()
+const activeDownloads = new Map()
+const DOWNLOAD_HISTORY_LIMIT = 50
+let downloadDirectory
+
+function trimDownloads(history) {
+  while (history.length > DOWNLOAD_HISTORY_LIMIT) {
+    const index = history.findIndex(entry => !activeDownloads.has(entry.id))
+    if (index < 0) break
+    history.splice(index, 1)
+  }
+}
+
+function handleDownload(event, item, contents) {
+  const owner = downloadOwners.get(contents)
+  if (!owner || quitting) {
+    event.preventDefault()
+    console.error('[dsh-browser-use-automation] rejected download without a live conversation owner')
+    return
+  }
+  const history = downloadRecords.get(owner.conversationId)
+  const entry = {
+    id: randomBytes(16).toString('hex'), filename: '', state: 'progressing',
+    receivedBytes: 0, totalBytes: 0,
+  }
+  history.push(entry)
+  try {
+    // 每次分配独占目录，既保留原文件名，又避免跨对话/同名并发下载覆盖已有文件。
+    const suggested = basename(win32.basename(item.getFilename()))
+    const characters = Array.from(suggested.replace(/[<>:"/\\|?*\u0000-\u001f\u007f]/g, '_').replace(/[. ]+$/g, ''))
+    while (Buffer.byteLength(characters.join(''), 'utf8') > 180) characters.pop()
+    entry.filename = characters.join('') || 'download'
+    if (/^(con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\.|$)/i.test(entry.filename)) entry.filename = '_' + entry.filename
+    entry.totalBytes = item.getTotalBytes()
+    mkdirSync(downloadDirectory, { recursive: true })
+    const directory = mkdtempSync(join(downloadDirectory, 'download-'))
+    entry.path = join(directory, entry.filename)
+    item.setSavePath(entry.path)
+  } catch (error) {
+    event.preventDefault()
+    entry.state = 'failed'
+    entry.error = `could not prepare download: ${error.message}`
+    console.error(`[dsh-browser-use-automation] ${entry.error}`)
+    trimDownloads(history)
+    return
+  }
+  const update = (_event, state) => {
+    entry.state = state
+    entry.receivedBytes = item.getReceivedBytes()
+    entry.totalBytes = item.getTotalBytes()
+  }
+  const done = (_event, state) => {
+    item.off('updated', update)
+    activeDownloads.delete(entry.id)
+    entry.state = state
+    entry.receivedBytes = item.getReceivedBytes()
+    entry.totalBytes = item.getTotalBytes()
+    if (state === 'completed') {
+      try {
+        const file = statSync(entry.path)
+        if (!file.isFile()) throw new Error('saved download is not a file')
+        entry.receivedBytes = file.size
+      } catch (error) {
+        entry.state = 'failed'
+        entry.error = `download completed but saved file is unavailable: ${error.message}`
+      }
+    } else if (!entry.error) entry.error = `download ${state}`
+    if (entry.state !== 'completed') console.error(`[dsh-browser-use-automation] ${entry.error}`)
+    trimDownloads(history)
+  }
+  activeDownloads.set(entry.id, { item, owner, entry })
+  item.on('updated', update)
+  item.once('done', done)
+  trimDownloads(history)
+}
 
 function finishRequest(job, error, result) {
   if (job.done) return
@@ -82,7 +158,7 @@ function cancelRequest(job, error) {
 }
 const operations = new Set([
   'navigate', 'snapshot', 'click', 'hover', 'type', 'insertText', 'scroll', 'key', 'screenshot', 'eval',
-  'wait', 'state', 'read', 'windowShow', 'windowHide', 'windowState', 'back', 'reload', 'close', 'reset',
+  'wait', 'state', 'read', 'downloads', 'windowShow', 'windowHide', 'windowState', 'back', 'reload', 'close', 'reset',
 ])
 
 function updateDockMenu() {
@@ -169,6 +245,8 @@ function createConversation(conversationId) {
     },
   }
 
+  if (!downloadRecords.has(conversationId)) downloadRecords.set(conversationId, [])
+
   function assertLive() {
     if (disposed) throw failure
     if (win !== null && win.isDestroyed()) {
@@ -235,6 +313,13 @@ function createConversation(conversationId) {
     if (disposed) return
     disposed = true
     failure = error
+    if (win !== null) downloadOwners.delete(win.webContents)
+    for (const download of activeDownloads.values()) {
+      if (download.owner === record) {
+        download.entry.error = 'download cancelled because its conversation window closed or reset'
+        download.item.cancel()
+      }
+    }
     for (const job of record.jobs) cancelRequest(job, error)
     revealReady = false
     for (const timer of timers) clearTimeout(timer)
@@ -1090,6 +1175,7 @@ function createConversation(conversationId) {
         backgroundThrottling: false,
       },
     })
+    downloadOwners.set(win.webContents, record)
     // 首次 loadURL 也可能触发原生焦点请求，不能等 about:blank/CDP 就绪后才禁止聚焦和鼠标命中。
     setBackgroundProperties()
     // 页面不能再开第二个原生窗口。target=_blank 等 HTTP(S) 链接改在当前
@@ -1264,6 +1350,11 @@ function onLine(line) {
     return
   }
   let record = windows.get(message.conversationId)
+  if (message.op === 'downloads') {
+    // 下载查询不能排在卡住的页面导航后，也不能仅为查询创建新窗口或触发下载重试。
+    send({ id: message.id, ok: true, result: { downloads: downloadRecords.get(message.conversationId) || [] } })
+    return
+  }
   if (message.op === 'close' || message.op === 'reset') {
     // 控制面不进页面队列，否则永远等不到卡住的 eval/wait 结束。
     // 仅用户显式调用才丢弃窗口现场；Cookie 等共享存储不清理。
@@ -1326,6 +1417,13 @@ function onConnection(connection) {
 }
 
 async function start() {
+  const configured = process.env.BROWSER_USE_DOWNLOAD_DIR
+  if (configured !== undefined && (!configured || !isAbsolute(configured))) {
+    throw new Error('BROWSER_USE_DOWNLOAD_DIR must be an absolute directory path')
+  }
+  downloadDirectory = configured || join(process.env.DSH_HOME || join(app.getPath('home'), '.dsh'), 'browser-use', 'downloads')
+  // 必须在任何页面创建前同步注册，并在事件内指定路径；否则 Electron 会弹原生保存对话框。
+  session.defaultSession.on('will-download', handleDownload)
   if (HIDE_DOCK) app.dock?.hide()
   updateDockMenu()
   if (WINDOWS_TASKBAR) {

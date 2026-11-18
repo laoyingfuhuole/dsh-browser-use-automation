@@ -1,8 +1,131 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
+import { EventEmitter } from 'node:events'
+import { basename, dirname } from 'node:path'
 import { createHostHarness, deferred } from './helpers/host-harness.mjs'
 
 const commandCount = (win, method) => win.commands.filter(command => command.method === method).length
+
+function download(h, win, filename = 'report.pdf', { saveError = false } = {}) {
+  const event = { prevented: false, preventDefault() { this.prevented = true } }
+  const item = Object.assign(new EventEmitter(), {
+    path: undefined, received: 0, total: 12, cancelled: false,
+    getFilename: () => filename,
+    getReceivedBytes() { return this.received }, getTotalBytes() { return this.total },
+    setSavePath(path) { if (saveError) throw new Error('save path denied'); this.path = path },
+    cancel() { this.cancelled = true; this.emit('done', {}, 'cancelled') },
+    finish(state = 'completed') {
+      this.received = this.total
+      if (state === 'completed') h.filesystem.files.set(this.path, this.total)
+      this.emit('done', {}, state)
+    },
+  })
+  h.defaultSession.emit('will-download', event, item, win?.webContents)
+  return { item, event }
+}
+
+test('downloads are routed without a save dialog and same filenames get unique paths', async t => {
+  const h = await createHostHarness(t)
+  assert.equal(h.defaultSession.listenerCount('will-download'), 1)
+  assert.deepEqual((await h.run('downloads')).result, { downloads: [] })
+  assert.equal(h.natives.length, 0)
+  await h.run('state', 'A')
+  await h.run('state', 'B')
+  const first = download(h, h.natives[0])
+  const second = download(h, h.natives[0])
+  const other = download(h, h.natives[1], 'other.pdf')
+  assert.equal(first.event.prevented, false)
+  assert.ok(first.item.path)
+  assert.notEqual(first.item.path, second.item.path)
+  assert.equal(basename(first.item.path), 'report.pdf')
+  assert.notEqual(dirname(first.item.path), dirname(other.item.path))
+  first.item.received = 5
+  first.item.emit('updated', {}, 'interrupted')
+  assert.equal((await h.run('downloads', 'A')).result.downloads[0].state, 'interrupted')
+  first.item.emit('updated', {}, 'progressing')
+  const entries = (await h.run('downloads', 'A')).result.downloads
+  assert.equal(entries.length, 2)
+  assert.equal(entries[0].receivedBytes, 5)
+  assert.equal(entries[0].state, 'progressing')
+  assert.equal((await h.run('downloads', 'B')).result.downloads.length, 1)
+  first.item.finish()
+  assert.equal((await h.run('downloads', 'A')).result.downloads[0].state, 'completed')
+  assert.equal(first.item.listenerCount('updated'), 0)
+  second.item.finish('interrupted')
+  assert.match((await h.run('downloads', 'A')).result.downloads[1].error, /interrupted/)
+  other.item.finish()
+})
+
+test('download names cannot escape their allocated directory and preparation failure cancels the default flow', async t => {
+  const h = await createHostHarness(t)
+  await h.run('state')
+  const fixture = download(h, h.natives[0], '../..\\folder\\CON.txt')
+  assert.equal(basename(fixture.item.path), '_CON.txt')
+  fixture.item.finish()
+  const long = download(h, h.natives[0], '文'.repeat(200) + '.txt')
+  assert.ok(Buffer.byteLength(basename(long.item.path)) <= 180)
+  long.item.finish()
+  const badSave = download(h, h.natives[0], 'file.pdf', { saveError: true })
+  assert.equal(badSave.event.prevented, true)
+  assert.match((await h.run('downloads')).result.downloads.at(-1).error, /save path denied/)
+  h.filesystem.mkdtempSync = () => { throw new Error('disk denied') }
+  const failed = download(h, h.natives[0], 'file.pdf')
+  assert.equal(failed.event.prevented, true)
+  assert.equal(failed.item.path, undefined)
+  assert.match((await h.run('downloads')).result.downloads.at(-1).error, /disk denied/)
+  const unknown = download(h, undefined)
+  assert.equal(unknown.event.prevented, true)
+})
+
+test('close cancels only its active downloads; history and query survive a blocked page queue', async t => {
+  const h = await createHostHarness(t)
+  await h.run('state', 'A')
+  await h.run('state', 'B')
+  const first = download(h, h.natives[0])
+  const other = download(h, h.natives[1])
+  const gate = deferred()
+  h.natives[0].onCommand = method => method === 'Input.insertText' ? gate.promise : undefined
+  h.submit('insertText', 'A', { text: 'blocked' })
+  await h.flush()
+  assert.equal((await h.run('downloads', 'A')).result.downloads.length, 1)
+  await h.run('close', 'A')
+  assert.equal(first.item.cancelled, true)
+  assert.equal(other.item.cancelled, false)
+  assert.equal((await h.run('downloads', 'A')).result.downloads[0].state, 'cancelled')
+  assert.equal(h.natives.length, 2, 'query must not recreate a closed window')
+  gate.resolve({})
+  other.item.finish()
+  await h.flush()
+})
+
+test('reset cancels active downloads but keeps completed files and the previous history', async t => {
+  const h = await createHostHarness(t)
+  await h.run('state')
+  const complete = download(h, h.natives[0])
+  complete.item.finish()
+  const active = download(h, h.natives[0])
+  const oldWindow = h.natives[0]
+  await h.run('reset')
+  assert.equal(active.item.cancelled, true)
+  assert.equal(h.filesystem.files.has(complete.item.path), true)
+  assert.equal((await h.run('downloads')).result.downloads.length, 2)
+  const late = download(h, oldWindow)
+  assert.equal(late.event.prevented, true)
+  await h.run('state')
+  assert.equal((await h.run('downloads')).result.downloads[0].state, 'completed')
+})
+
+test('completed download requires a saved file and terminal history stays bounded', async t => {
+  const h = await createHostHarness(t)
+  await h.run('state')
+  const missing = download(h, h.natives[0])
+  missing.item.emit('done', {}, 'completed')
+  assert.match((await h.run('downloads')).result.downloads[0].error, /saved file is unavailable/)
+  for (let index = 0; index < 55; index++) download(h, h.natives[0], `${index}.txt`).item.finish()
+  const entries = (await h.run('downloads')).result.downloads
+  assert.equal(entries.length, 50)
+  assert.equal(entries.at(-1).filename, '54.txt')
+})
 
 test('read returns bounded body text with explicit truncation and preserves click refs', async t => {
   const h = await createHostHarness(t)

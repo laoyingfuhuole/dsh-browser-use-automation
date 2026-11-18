@@ -50,7 +50,7 @@ async function fixture(t, { failAt } = {}) {
 test('all tools register once with executable schemas and renderers', async t => {
   const h = await fixture(t)
   h.register()
-  assert.equal(h.definitions.size, 18)
+  assert.equal(h.definitions.size, 19)
   for (const definition of h.definitions.values()) {
     assert.equal(typeof definition.execute, 'function')
     assert.equal(typeof definition.output.render, 'function')
@@ -265,6 +265,27 @@ test('screenshots decode base64 into unique files and fullPage remains unimpleme
   assert.equal(a.bytes, Buffer.byteLength('fixture image bytes'))
   assert.equal(a.mime, 'image/jpeg')
   assert.equal(h.calls[0].payload.fullPage, undefined)
+})
+
+test('download query renders actual paths and terminal states and matches the host schema', async t => {
+  const host = await createHostHarness(t)
+  const h = await fixture(t)
+  h.register()
+  const tool = h.definitions.get('browser_use_downloads')
+  h.client.call = async (op, payload) => {
+    assert.equal(op, 'downloads')
+    assert.equal(payload.conversationId, 'trusted-chat')
+    return (await host.run(op, payload.conversationId)).result
+  }
+  const empty = await tool.execute({}, h.exec)
+  assertOutput(tool.output.schema, empty)
+  assert.match(tool.output.render({}, empty)[0].text, /No downloads recorded/)
+  const completed = { downloads: [{ id: 'one', filename: 'report.pdf', state: 'completed', path: '/tmp/report.pdf', receivedBytes: 12, totalBytes: 12 }] }
+  assertOutput(tool.output.schema, completed)
+  assert.match(tool.output.render({}, completed)[0].text, /completed: report.pdf.*\nPath: \/tmp\/report.pdf/)
+  const failed = { downloads: [{ id: 'two', filename: 'report.pdf', state: 'failed', receivedBytes: 0, totalBytes: 12, error: 'disk denied' }] }
+  assertOutput(tool.output.schema, failed)
+  assert.match(tool.output.render({}, failed)[0].text, /Error: disk denied/)
 })
 
 test('snapshot renderer preserves refs and clearly reports empty or truncated results', async t => {

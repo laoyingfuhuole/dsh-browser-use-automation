@@ -50,12 +50,22 @@ export async function createHostHarness(t, { platform = 'linux', authenticate = 
   const intervals = new Map()
   const responses = []
   const output = []
+  const filesystem = {
+    directories: [], files: new Map(),
+    mkdirSync(path) { this.directories.push(path) },
+    mkdtempSync(prefix) { const path = prefix + String(this.directories.length); this.directories.push(path); return path },
+    statSync(path) {
+      if (!this.files.has(path)) throw new Error('fixture file missing')
+      return { isFile: () => true, size: this.files.get(path) }
+    },
+  }
   const app = Object.assign(new EventEmitter(), {
     quitCalls: 0, quit() { this.quitCalls++ },
     whenReady: () => Promise.resolve(), setAppUserModelId() {}, isActive: () => false,
     focusCalls: 0, focus() { this.focusCalls++ },
+    getPath: name => name === 'home' ? '/fixture/home' : '/fixture/' + name,
   })
-  const defaultSession = { flushes: 0, flushStorageData() { this.flushes++ }, cookies: { async flushStore() {} } }
+  const defaultSession = Object.assign(new EventEmitter(), { flushes: 0, flushStorageData() { this.flushes++ }, cookies: { async flushStore() {} } })
   class BrowserWindow extends EventEmitter {
     constructor(options) {
       super()
@@ -149,12 +159,16 @@ export async function createHostHarness(t, { platform = 'linux', authenticate = 
     require(name) {
       if (name === 'electron') return { app, BrowserWindow, screen, session: { defaultSession }, Menu: { buildFromTemplate: items => items } }
       if (name === 'node:net') return { createServer(handler) { accept = handler; return server } }
-      if (name === 'node:fs') return { mkdirSync() { throw new Error('No profile writes permitted') } }
+      if (name === 'node:fs') return {
+        mkdirSync: path => filesystem.mkdirSync(path),
+        mkdtempSync: path => filesystem.mkdtempSync(path),
+        statSync: path => filesystem.statSync(path),
+      }
       if (name === 'node:path' || name === 'node:crypto') return require(name)
       throw new Error(`Unexpected host import: ${name}`)
     },
     process: { env: { BROWSER_USE_TOKEN: 'fixture-token' }, platform, pid: 123, on() {}, stdout: { write: line => output.push(line) } },
-    console, URL, Buffer,
+    console: { ...console, error: (...args) => output.push(args.join(' ')) }, URL, Buffer,
     setTimeout(callback, ms) { const id = {}; timeouts.set(id, { callback, ms }); return id },
     clearTimeout(id) { timeouts.delete(id) },
     setInterval(callback) { const id = { unref() {} }; intervals.set(id, callback); return id },
@@ -177,7 +191,7 @@ export async function createHostHarness(t, { platform = 'linux', authenticate = 
   if (authenticate) send({ id: 0, op: 'hello', token: 'fixture-token' })
   let nextId = 1
   const h = {
-    ...state, app, natives, responses, output, server, connection, defaultSession, timeouts, intervals, flush,
+    ...state, app, natives, responses, output, server, connection, defaultSession, filesystem, timeouts, intervals, flush,
     send, accept, socket,
     submit(op, conversationId = 'A', payload = {}) {
       const id = nextId++

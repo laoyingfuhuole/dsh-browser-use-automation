@@ -71,6 +71,8 @@ export function apply(ctx, config = {}) {
       'These tools report dispatched input, not business success;',
       'inspect the result with browser_use_read/wait/assert. Pressing Enter may submit a form; never',
       'repeat a key action automatically. Use browser_use_screenshot when pixels matter.',
+      'Browser downloads save in the background without a native save dialog. Use browser_use_downloads',
+      'to check the path and completed state; a click or navigation error does not prove download failure.',
       'Use browser_use_read for rendered page text or a CSS region, with an explicit text budget;',
       'it preserves snapshot refs and reports truncation, but does not extract articles or read frames.',
       'After navigation or a submit, prefer browser_use_wait over guessing with a sleep. Use',
