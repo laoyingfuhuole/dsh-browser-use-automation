@@ -6,6 +6,17 @@
   "main": "index.js",
   "exports": {
     ".": "./index.js",
+    "./basic": "./src/basic.js",
+    "./read": "./src/read.js",
+    "./files": "./src/files.js",
+    "./requests": "./src/requests.js",
+    "./eval": "./src/eval.js",
+    "./locale/*.json": "./src/locales/core/*.json",
+    "./basic/locale/*.json": "./src/locales/basic/*.json",
+    "./read/locale/*.json": "./src/locales/read/*.json",
+    "./files/locale/*.json": "./src/locales/files/*.json",
+    "./requests/locale/*.json": "./src/locales/requests/*.json",
+    "./eval/locale/*.json": "./src/locales/eval/*.json",
     "./host/main.cjs": "./host/main.cjs",
     "./package.json": "./package.json"
   },

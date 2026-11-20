@@ -153,6 +153,29 @@ export class HostClient {
     this.lifecycle = null
     this.buffer = ''
     this.stderr = ''
+    this.configuration = Promise.resolve()
+    this.componentRevision = 0
+    this.appliedComponentRevision = -1
+  }
+
+  configureComponents(components) {
+    this.options.components = [...components]
+    this.componentRevision++
+    // 未启动时只更新首次握手配置，不因界面开关启动 Electron。
+    if (this.starting !== null || this.socket === null || this.socket.destroyed) return
+    const lifecycle = this.lifecycle
+    this.configuration = this.syncComponents(lifecycle.signal)
+    this.configuration.catch(error => { if (this.lifecycle === lifecycle) this.dispose(error) })
+  }
+
+  async syncComponents(signal) {
+    if (this.options.components === undefined) return
+    while (this.appliedComponentRevision !== this.componentRevision) {
+      const revision = this.componentRevision
+      await this.request({ id: this.nextId++, op: 'components', enabled: [...this.options.components] }, 5000, signal)
+      signal.throwIfAborted()
+      this.appliedComponentRevision = revision
+    }
   }
 
   /**
@@ -179,6 +202,11 @@ export class HostClient {
     const starting = this.ensureStarted()
     const lifecycle = this.lifecycle
     await waitForStartup(starting, signal)
+    await waitForStartup(this.configuration, signal)
+    // starting 收尾的微任务窗口仍可能卸载组件；发页面操作前补齐最后一代能力配置。
+    if (this.appliedComponentRevision !== this.componentRevision) {
+      await waitForStartup(this.syncComponents(lifecycle.signal), signal)
+    }
     if (signal?.aborted) throw new Error('browser operation aborted')
     if (this.lifecycle !== lifecycle) throw new Error('browser host changed before the command was sent')
     // close/reset 只显式销毁此对话的窗口。共享 host 及其他对话继续运行；只有
@@ -213,6 +241,7 @@ export class HostClient {
     delete env.ELECTRON_RUN_AS_NODE
     env.BROWSER_USE_WIDTH = String(this.options.width || 1400)
     env.BROWSER_USE_HEIGHT = String(this.options.height || 900)
+    if (this.options.components !== undefined) env.BROWSER_USE_COMPONENTS = JSON.stringify(this.options.components)
     this.buffer = ''
     this.stderr = ''
 
@@ -275,6 +304,7 @@ export class HostClient {
     signal.throwIfAborted()
     // id 0 留给认证；普通操作从 1 开始。认证也使用同一套请求清理逻辑。
     await this.request({ id: 0, op: 'hello', token }, 5000, signal)
+    await this.syncComponents(signal)
     signal.throwIfAborted()
   }
 
@@ -394,6 +424,8 @@ export class HostClient {
     this.socket = null
     this.lifecycle = null
     this.starting = null
+    this.configuration = Promise.resolve()
+    this.appliedComponentRevision = -1
     this.buffer = ''
     this.stderr = ''
     // 先把原始错误交给请求，再取消启动等待，避免把断连误报成用户取消。

@@ -1,4 +1,14 @@
-# dsh-browser-use-automation：首次工具调用才启动后台浏览器宿主。
+# 同一安装包内的独立组件；旧核心 ID 保留，profile 的整体禁用记录仍然生效。
 - insert:
     - id: dsh-browser-use-automation
       name: dsh-browser-use-automation
+    - id: browser-use-basic
+      name: dsh-browser-use-automation/basic
+    - id: browser-use-read
+      name: dsh-browser-use-automation/read
+    - id: browser-use-files
+      name: dsh-browser-use-automation/files
+    - id: browser-use-requests
+      name: dsh-browser-use-automation/requests
+    - id: browser-use-eval
+      name: dsh-browser-use-automation/eval

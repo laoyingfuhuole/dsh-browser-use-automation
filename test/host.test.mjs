@@ -127,6 +127,328 @@ test('completed download requires a saved file and terminal history stays bounde
   assert.equal(entries.at(-1).filename, '54.txt')
 })
 
+function pageRequest(h, win, kind = 'confirm', message = 'Continue?') {
+  const event = { sender: win.webContents, senderFrame: { url: win.page.location.href } }
+  h.ipcMain.emit('dsh-browser-native-ui', event, { kind, message, defaultValue: 'default' })
+  return event
+}
+
+function components(h, enabled, id = 'component-config') {
+  h.send({ id, op: 'components', enabled })
+  assert.equal(h.response(id)?.ok, true)
+}
+
+test('disabled tools cannot operate through their old component and shared windows stay alive', async t => {
+  const h = await createHostHarness(t)
+  await h.run('state')
+  components(h, ['basic'])
+  assert.match((await h.run('read', 'A', { component: 'read' })).error, /component is disabled/)
+  assert.equal((await h.run('state', 'A', { component: 'basic' })).ok, true)
+  assert.equal(h.natives[0].destroyed, false)
+  assert.match((await h.run('eval', 'A', { component: 'read', expression: 'true' })).error, /component is disabled/)
+  assert.equal((await h.run('eval', 'A', { component: 'basic', expression: 'true' })).result.value, 'true', 'internal assert evaluation must remain available')
+})
+
+test('disabling file component cancels active downloads and blocks future saves without native fallback', async t => {
+  const h = await createHostHarness(t)
+  await h.run('state')
+  const active = download(h, h.natives[0])
+  components(h, ['basic', 'requests'])
+  assert.equal(active.item.cancelled, true)
+  const denied = download(h, h.natives[0])
+  assert.equal(denied.event.prevented, true)
+  assert.equal(denied.item.path, undefined)
+  assert.match((await h.run('downloads', 'A', { component: 'files' })).error, /disabled/)
+  assert.equal(h.natives[0].destroyed, false)
+})
+
+test('disabling request handling dismisses pending dialogs and cannot resurrect a late approval', async t => {
+  const h = await createHostHarness(t)
+  await h.run('state')
+  const win = h.natives[0]
+  const event = pageRequest(h, win)
+  const pending = (await h.run('requests')).result.requests[0]
+  components(h, ['basic', 'files'])
+  assert.equal(event.returnValue.accepted, false)
+  const rejected = pageRequest(h, win)
+  assert.equal(rejected.returnValue.accepted, false)
+  components(h, ['basic', 'files', 'requests'], 'component-config-two')
+  assert.match((await h.run('respond', 'A', { requestId: pending.id, accept: true, component: 'requests' })).error, /stale/)
+  assert.equal((await h.run('requests')).result.requests.length, 0)
+})
+
+test('disabling files does not dismiss an unrelated live confirmation request', async t => {
+  const h = await createHostHarness(t)
+  await h.run('state')
+  const event = pageRequest(h, h.natives[0], 'confirm')
+  const confirmation = (await h.run('requests')).result.requests[0]
+  components(h, ['basic', 'read', 'requests', 'eval'])
+  assert.equal(event.returnValue, undefined)
+  assert.equal((await h.run('requests')).result.requests[0].id, confirmation.id)
+  await h.run('respond', 'A', { requestId: confirmation.id, accept: false, component: 'requests' })
+  assert.equal(event.returnValue.accepted, false)
+})
+
+test('disabling request handling cancels a file-component upload before paths reach the page', async t => {
+  const h = await createHostHarness(t)
+  await h.run('state')
+  const win = h.natives[0]
+  win.webContents.debugger.emit('message', {}, 'Page.fileChooserOpened', { frameId: 'fixture-frame', backendNodeId: 1, mode: 'selectSingle' })
+  await h.flush()
+  const requestId = (await h.run('requests')).result.requests[0].id
+  h.filesystem.files.set('/fixture/input.txt', 1)
+  const gate = deferred()
+  win.onCommand = method => method === 'DOM.describeNode' ? gate.promise : undefined
+  const id = h.submit('upload', 'A', { component: 'files', requestId, paths: ['/fixture/input.txt'] })
+  await h.flush()
+  components(h, ['basic', 'read', 'files', 'eval'])
+  assert.match(h.response(id).error, /request-handling component disabled/)
+  gate.resolve({ node: { nodeName: 'INPUT', attributes: ['type', 'file'] } })
+  await h.flush()
+  assert.equal(commandCount(win, 'DOM.setFileInputFiles'), 0)
+  assert.equal(h.requests.has(id), false)
+})
+
+test('disabling component reports cancellation but does not release an in-flight page barrier early', async t => {
+  const h = await createHostHarness(t)
+  await h.run('state')
+  const gate = deferred()
+  const win = h.natives[0]
+  win.onCommand = method => method === 'Runtime.evaluate' ? gate.promise : undefined
+  const reading = h.submit('read', 'A', { component: 'read' })
+  const queued = h.submit('state', 'A', { component: 'basic' })
+  await h.flush()
+  components(h, ['basic'])
+  assert.match(h.response(reading).error, /component disabled: read/)
+  assert.equal(h.response(queued), undefined)
+  win.onCommand = undefined
+  gate.resolve({ result: { value: {} } })
+  await h.flush()
+  assert.equal(h.response(queued).ok, true)
+})
+
+test('page dialogs wait for an explicit response outside the blocked page queue', async t => {
+  const h = await createHostHarness(t)
+  await h.run('state')
+  const win = h.natives[0]
+  const gate = deferred()
+  win.onCommand = method => {
+    if (method === 'Runtime.evaluate') {
+      pageRequest(h, win)
+      return gate.promise
+    }
+  }
+  const id = h.submit('eval', 'A', { expression: 'confirm("Continue?")' })
+  await h.flush()
+  assert.match(h.response(id).error, /Browser confirm request is pending/)
+  const status = (await h.run('requests')).result
+  assert.equal(status.requests[0].kind, 'confirm')
+  assert.equal((await h.run('requests', 'B')).result.requests.length, 0)
+  const requestId = status.requests[0].id
+  assert.match((await h.run('state')).error, /browser request is pending/)
+  assert.equal((await h.run('respond', 'B', { requestId, accept: true })).ok, false)
+  const result = await h.run('respond', 'A', { requestId, accept: false })
+  assert.equal(result.result.accepted, false)
+  assert.equal((await h.run('requests')).result.requests.length, 0)
+  gate.resolve({ result: { value: false } })
+  await h.flush()
+})
+
+test('prompt, permissions and pending requests retain explicit accept/dismiss semantics and invalidate on navigation', async t => {
+  const h = await createHostHarness(t)
+  await h.run('state')
+  const win = h.natives[0]
+  const event = pageRequest(h, win, 'prompt')
+  assert.equal(event.returnValue, undefined)
+  const requestId = (await h.run('requests')).result.requests[0].id
+  await h.run('respond', 'A', { requestId, accept: true, value: 'typed by user' })
+  assert.equal(event.returnValue.accepted, true)
+  assert.equal(event.returnValue.value, 'typed by user')
+  let granted
+  h.defaultSession.permissionRequest(win.webContents, 'notifications', value => { granted = value })
+  assert.equal(granted, undefined)
+  const permission = (await h.run('requests')).result.requests[0]
+  assert.equal(permission.kind, 'permission')
+  await h.run('respond', 'A', { requestId: permission.id, accept: false })
+  assert.equal(granted, false)
+  const old = pageRequest(h, win, 'confirm')
+  const stale = (await h.run('requests')).result.requests[0].id
+  win.webContents.emit('did-start-navigation', { isMainFrame: true })
+  assert.equal(old.returnValue.accepted, false)
+  assert.match((await h.run('respond', 'A', { requestId: stale, accept: true })).error, /stale/)
+  assert.equal(h.defaultSession.permissionCheck(), false)
+  assert.equal(win.options.webPreferences.disableDialogs, true)
+})
+
+test('HTML file choosers are intercepted, accept only regular files and require a current request', async t => {
+  const h = await createHostHarness(t)
+  await h.run('state')
+  const win = h.natives[0]
+  assert.ok(win.commands.some(command => command.method === 'Page.setInterceptFileChooserDialog' && command.params.enabled))
+  win.webContents.debugger.emit('message', {}, 'Page.fileChooserOpened', { backendNodeId: 10, frameId: 'fixture-frame', mode: 'selectSingle' })
+  await h.flush()
+  const request = (await h.run('requests')).result.requests[0]
+  assert.equal(request.kind, 'upload')
+  assert.equal(request.multiple, false)
+  win.onCommand = method => method === 'DOM.describeNode' ? Promise.resolve({ node: { nodeName: 'INPUT', attributes: ['type', 'file'] } }) : undefined
+  h.filesystem.files.set('/fixture/input.txt', 12)
+  assert.match((await h.run('upload', 'A', { requestId: request.id, paths: ['relative'] })).error, /absolute/)
+  assert.match((await h.run('upload', 'A', { requestId: request.id, paths: ['/fixture/input.txt', '/fixture/input2.txt'] })).error, /only one/)
+  assert.equal((await h.run('upload', 'A', { requestId: request.id, paths: ['/fixture/input.txt'] })).result.files, 1)
+  const sent = win.commands.find(command => command.method === 'DOM.setFileInputFiles')
+  assert.deepEqual(Array.from(sent.params.files), ['/fixture/input.txt'])
+  assert.match((await h.run('upload', 'A', { requestId: request.id, paths: ['/fixture/input.txt'] })).error, /stale/)
+})
+
+test('print requests use a PDF tool and unsupported pickers cannot be accepted', async t => {
+  const h = await createHostHarness(t)
+  await h.run('state')
+  const win = h.natives[0]
+  pageRequest(h, win, 'print', 'Use PDF instead')
+  const request = (await h.run('requests')).result.requests[0]
+  assert.equal((await h.run('respond', 'A', { requestId: request.id, accept: true })).ok, false)
+  const pdf = await h.run('pdf')
+  assert.equal(pdf.ok, true, pdf.error)
+  assert.equal(pdf.result.mime, 'application/pdf')
+  assert.ok(h.filesystem.files.has(pdf.result.path))
+  assert.equal((await h.run('requests')).result.requests.length, 0)
+  pageRequest(h, win, 'unsupported', 'showDirectoryPicker not supported')
+  const unsupported = (await h.run('requests')).result.requests[0]
+  assert.equal((await h.run('respond', 'A', { requestId: unsupported.id, accept: true })).ok, false)
+  assert.equal((await h.run('respond', 'A', { requestId: unsupported.id, accept: false })).ok, true)
+})
+
+test('upload cancellation before file dispatch prevents file selection and clears its RPC request', async t => {
+  const h = await createHostHarness(t)
+  await h.run('state')
+  const win = h.natives[0]
+  win.webContents.debugger.emit('message', {}, 'Page.fileChooserOpened', { backendNodeId: 7, frameId: 'fixture-frame', mode: 'selectSingle' })
+  await h.flush()
+  const requestId = (await h.run('requests')).result.requests[0].id
+  h.filesystem.files.set('/fixture/input.txt', 12)
+  const gate = deferred()
+  win.onCommand = method => method === 'DOM.describeNode' ? gate.promise : undefined
+  const id = h.submit('upload', 'A', { requestId, paths: ['/fixture/input.txt'] })
+  await h.flush()
+  h.cancel(id)
+  gate.resolve({ node: { nodeName: 'INPUT', attributes: ['type', 'file'] } })
+  await h.flush()
+  assert.match(h.response(id).error, /cancelled/)
+  assert.equal(commandCount(win, 'DOM.setFileInputFiles'), 0)
+  assert.equal(h.requests.has(id), false)
+})
+
+test('sensitive permissions stay denied and closing a window dismisses its synchronous requests', async t => {
+  const h = await createHostHarness(t)
+  await h.run('state')
+  const win = h.natives[0]
+  let granted
+  h.defaultSession.permissionRequest(win.webContents, 'media', value => { granted = value })
+  assert.equal(granted, false)
+  const unsupported = (await h.run('requests')).result.requests[0]
+  assert.equal(unsupported.kind, 'unsupported')
+  assert.equal((await h.run('respond', 'A', { requestId: unsupported.id, accept: true })).ok, false)
+  const dialog = pageRequest(h, win)
+  await h.run('close')
+  assert.equal(dialog.returnValue.accepted, false)
+  assert.equal((await h.run('requests')).result.requests.length, 0)
+})
+
+test('browser request limits remain bounded and subframe navigation invalidates pending answers', async t => {
+  const h = await createHostHarness(t)
+  await h.run('state')
+  const win = h.natives[0]
+  for (let index = 0; index < 10; index++) pageRequest(h, win, 'print', `Print ${index}`)
+  const overflow = pageRequest(h, win, 'confirm')
+  assert.equal(overflow.returnValue.accepted, false)
+  assert.equal((await h.run('requests')).result.requests.length, 10)
+  for (const request of (await h.run('requests')).result.requests) {
+    await h.run('respond', 'A', { requestId: request.id, accept: false })
+  }
+  const event = pageRequest(h, win, 'prompt')
+  const pending = (await h.run('requests')).result.requests[0]
+  win.webContents.emit('did-start-navigation', { isMainFrame: false })
+  assert.equal(event.returnValue.accepted, false)
+  assert.match((await h.run('respond', 'A', { requestId: pending.id, accept: true })).error, /stale/)
+  assert.equal(win.options.webPreferences.sandbox, true)
+  assert.equal(win.options.webPreferences.contextIsolation, true)
+  assert.equal(win.options.webPreferences.nodeIntegration, false)
+  assert.equal(win.options.webPreferences.nodeIntegrationInSubFrames, true)
+})
+
+test('HTML directory inputs, missing files and reused dispatches cannot release upload paths', async t => {
+  const h = await createHostHarness(t)
+  await h.run('state')
+  const win = h.natives[0]
+  win.webContents.debugger.emit('message', {}, 'Page.fileChooserOpened', { backendNodeId: 20, frameId: 'fixture-frame', mode: 'selectMultiple' })
+  await h.flush()
+  const requestId = (await h.run('requests')).result.requests[0].id
+  assert.match((await h.run('upload', 'A', { requestId, paths: ['/fixture/missing.txt'] })).error, /missing/)
+  h.filesystem.files.set('/fixture/input.txt', 12)
+  win.onCommand = method => method === 'DOM.describeNode' ? Promise.resolve({ node: { nodeName: 'INPUT', attributes: ['type', 'file', 'webkitdirectory', ''] } }) : undefined
+  assert.match((await h.run('upload', 'A', { requestId, paths: ['/fixture/input.txt'] })).error, /directory picker/)
+  assert.equal(commandCount(win, 'DOM.setFileInputFiles'), 0)
+  win.onCommand = method => {
+    if (method === 'DOM.describeNode') return Promise.resolve({ node: { nodeName: 'INPUT', attributes: ['type', 'file'] } })
+    if (method === 'DOM.setFileInputFiles') return Promise.reject(new Error('uncertain upload error'))
+  }
+  assert.match((await h.run('upload', 'A', { requestId, paths: ['/fixture/input.txt'] })).error, /uncertain/)
+  assert.match((await h.run('upload', 'A', { requestId, paths: ['/fixture/input.txt'] })).error, /stale/)
+  assert.equal(commandCount(win, 'DOM.setFileInputFiles'), 1)
+})
+
+test('upload requests identify the requesting child frame and never authorize an unknown source', async t => {
+  const h = await createHostHarness(t)
+  await h.run('state')
+  const win = h.natives[0]
+  win.onCommand = method => method === 'Page.getFrameTree' ? Promise.resolve({
+    frameTree: { frame: { id: 'top', url: 'https://top.example/' }, childFrames: [
+      { frame: { id: 'child', url: 'https://upload.example/frame' } },
+    ] },
+  }) : undefined
+  win.webContents.debugger.emit('message', {}, 'Page.fileChooserOpened', { backendNodeId: 20, frameId: 'child', mode: 'selectSingle' })
+  await h.flush()
+  const request = (await h.run('requests')).result.requests[0]
+  assert.equal(request.url, 'https://upload.example/frame')
+  assert.equal(request.kind, 'upload')
+  await h.run('respond', 'A', { requestId: request.id, accept: false })
+  win.webContents.debugger.emit('message', {}, 'Page.fileChooserOpened', { backendNodeId: 21, frameId: 'unknown', mode: 'selectSingle' })
+  await h.flush()
+  const blocked = (await h.run('requests')).result.requests[0]
+  assert.equal(blocked.kind, 'unsupported')
+  assert.match(blocked.message, /来源无法确认/)
+  assert.equal((await h.run('upload', 'A', { requestId: blocked.id, paths: ['/fixture/file.txt'] })).ok, false)
+  assert.equal(commandCount(win, 'DOM.setFileInputFiles'), 0)
+})
+
+test('preload failure closes only the affected window rather than falling back to native dialogs', async t => {
+  const h = await createHostHarness(t)
+  await h.run('state', 'A')
+  await h.run('state', 'B')
+  h.natives[0].webContents.emit('preload-error', {}, '/fixture/native-preload.cjs', new Error('bridge unavailable'))
+  assert.equal(h.natives[0].destroyed, true)
+  assert.equal(h.natives[1].destroyed, false)
+  assert.equal((await h.run('state', 'B')).ok, true)
+})
+
+test('PDF export rejects invalid data, page changes and cancelled output before writing a file', async t => {
+  for (const mode of ['invalid', 'navigate', 'cancel']) {
+    const h = await createHostHarness(t)
+    await h.run('state')
+    const win = h.natives[0]
+    const gate = deferred()
+    win.webContents.printToPDF = () => gate.promise
+    const id = h.submit('pdf')
+    await h.flush()
+    if (mode === 'navigate') win.webContents.emit('did-start-navigation', { isMainFrame: true })
+    if (mode === 'cancel') h.cancel(id)
+    gate.resolve(Buffer.from(mode === 'invalid' ? 'invalid' : '%PDF-1.7 fixture'))
+    await h.flush()
+    assert.equal(h.response(id).ok, false)
+    assert.equal(h.filesystem.files.size, 0)
+  }
+})
+
 test('read returns bounded body text with explicit truncation and preserves click refs', async t => {
   const h = await createHostHarness(t)
   const ref = (await h.run('snapshot')).result.elements[0].ref

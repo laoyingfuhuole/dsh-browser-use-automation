@@ -1,6 +1,6 @@
 /**
  * 插件入口：只做组装，不在这里执行浏览器操作。代码语言是 JavaScript。
- * 阅读顺序：apply 配置插件 → src/tools.js 定义工具 → src/client.js 发送请求
+ * 阅读顺序：apply 提供共享核心 → 独立组件注册工具 → src/client.js 发送请求
  * → host/main.cjs 在单独的 Electron 进程中操作页面。
  *
  * 每个插件实例共用一个客户端和一个 Electron host，各对话独享窗口和操作队列。
@@ -9,13 +9,14 @@
  * @module dsh-browser-use-automation
  */
 
-import { HostClient } from './src/client.js'
-import { registerTools } from './src/tools.js'
+import { BrowserCore } from './src/core.js'
+import { corePrompt } from './src/prompts.js'
 import { verifyInstallation } from './src/integrity.js'
 
 export const name = 'dsh-browser-use-automation'
-// 告诉 DSH 本插件依赖哪两个服务；ctx 由框架提供，不是浏览器里的页面对象。
-export const inject = ['tools', 'systemPrompt']
+// 核心只提供 browserUse；工具组件依赖该服务，核心关闭时由 Cordis 级联卸载。
+export const inject = ['systemPrompt']
+export const provide = 'browserUse'
 
 /**
  * DSH 加载插件时调用 apply。默认参数 {} 允许不传配置；JSDoc 中的类型只帮助
@@ -26,64 +27,20 @@ export const inject = ['tools', 'systemPrompt']
 export function apply(ctx, config = {}) {
   // 市场 GUI 更新也走这个加载入口；整包不一致就拒绝注册，不让新客户端配旧 host。
   verifyInstallation()
-  const client = new HostClient({
-    width: positiveInt(config.width, 1400),
-    height: positiveInt(config.height, 900),
-  })
+  const core = new BrowserCore(config)
 
   // effect 接收安装函数，安装函数返回卸载时执行的清理函数。这里不能立即
   // 调用 dispose，否则插件刚加载就会关闭资源；卸载时才结束进程和未完成请求。
   ctx.effect(() => () => {
-    client.dispose()
+    core.dispose()
   })
+  ctx.provide('browserUse', core)
 
-  // 以下是给模型看的使用说明，不是执行脚本；实际工具行为由 registerTools 定义。
-  ctx.systemPrompt.section({
+  // 通用约束只出现一次，各工具组件单独拥有自己的使用提示。
+  const removePrompt = ctx.systemPrompt.section({
     name: 'tool:dsh-browser-use-automation',
     order: 150,
-    text: [
-      'Use the browser_use_* tools to operate the background browser. The browser is a real',
-      'Chromium page in an offscreen Electron window; its window is parked outside',
-      'the visible desktop, and never raised or focused by a tool call. Your work does not depend',
-      'on the DSH window being in front or on any window being visible.',
-      'Each conversation is automatically assigned its own window: never choose another',
-      'conversation or reuse its snapshot refs. Cookies and login storage are shared, so logging',
-      'out or switching accounts affects other conversations. Preserve this conversation’s window',
-      'across multiple turns; never routinely close or reset it at the end of a turn or task.',
-      'browser_use_close explicitly closes only this conversation’s window and rejects its',
-      'queued/running operations. browser_use_reset is only for user-confirmed recovery: first',
-      'warn that DOM, forms, unsaved input, and page state will be lost, then obtain the user’s',
-      'confirmation before setting confirm to true. Reset rejects this conversation’s old',
-      'queued/running operations, retains cookies and other windows, and creates no replacement',
-      'until the next normal browser call. Never automatically close/reset on cancellation or',
-      'timeout, and never automatically retry mutations: cancellation cannot roll back real page',
-      'effects or guarantee termination of in-flight JavaScript. A click may still complete its',
-      'press/release pair. Inspect state before deciding what to do next; a running CDP operation',
-      'may still be settling, and a timed-out navigation can retain the window queue until loading',
-      'actually finishes or fails, or the user explicitly requests close or confirmed reset.',
-      'browser_use_open (http/https), back and reload already return numbered snapshot refs; use those',
-      'directly instead of immediately requesting another snapshot. A new snapshot replaces old refs;',
-      'scope it with selector/maxElements and omit diagnostic selectors when unnecessary.',
-      'Use browser_use_type mode=fast for long input, human for per-character events; both append,',
-      'and interrupted input must be inspected before continuing. Use browser_use_scroll and browser_use_key',
-      'for key input. Use browser_use_hover(ref) to reveal hover menus without clicking; inspect the',
-      'result with wait/read/screenshot and take a new snapshot before selecting revealed controls.',
-      'These tools report dispatched input, not business success;',
-      'inspect the result with browser_use_read/wait/assert. Pressing Enter may submit a form; never',
-      'repeat a key action automatically. Use browser_use_screenshot when pixels matter.',
-      'Browser downloads save in the background without a native save dialog. Use browser_use_downloads',
-      'to check the path and completed state; a click or navigation error does not prove download failure.',
-      'Use browser_use_read for rendered page text or a CSS region, with an explicit text budget;',
-      'it preserves snapshot refs and reports truncation, but does not extract articles or read frames.',
-      'After navigation or a submit, prefer browser_use_wait over guessing with a sleep. Use',
-      'browser_use_eval for values the snapshot does not expose, and browser_use_assert before',
-      'claiming a step worked. Do not paste the DSH GUI URL into the browser: it is not the target.',
-    ].join(' '),
+    text: corePrompt,
   })
-
-  registerTools(ctx, client, config)
-}
-
-function positiveInt(value, fallback) {
-  return Number.isInteger(value) && value > 0 ? value : fallback
+  ctx.effect(() => removePrompt)
 }

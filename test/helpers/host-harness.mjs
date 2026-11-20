@@ -50,6 +50,7 @@ export async function createHostHarness(t, { platform = 'linux', authenticate = 
   const intervals = new Map()
   const responses = []
   const output = []
+  const ipcMain = new EventEmitter()
   const filesystem = {
     directories: [], files: new Map(),
     mkdirSync(path) { this.directories.push(path) },
@@ -58,6 +59,10 @@ export async function createHostHarness(t, { platform = 'linux', authenticate = 
       if (!this.files.has(path)) throw new Error('fixture file missing')
       return { isFile: () => true, size: this.files.get(path) }
     },
+    writeFileSync(path, bytes) { this.files.set(path, bytes.length) },
+    realpathSync: path => path,
+    accessSync() {},
+    constants: { R_OK: 4 },
   }
   const app = Object.assign(new EventEmitter(), {
     quitCalls: 0, quit() { this.quitCalls++ },
@@ -66,6 +71,9 @@ export async function createHostHarness(t, { platform = 'linux', authenticate = 
     getPath: name => name === 'home' ? '/fixture/home' : '/fixture/' + name,
   })
   const defaultSession = Object.assign(new EventEmitter(), { flushes: 0, flushStorageData() { this.flushes++ }, cookies: { async flushStore() {} } })
+  defaultSession.registerPreloadScript = value => { defaultSession.preload = value; return 'fixture-preload' }
+  defaultSession.setPermissionCheckHandler = handler => { defaultSession.permissionCheck = handler }
+  defaultSession.setPermissionRequestHandler = handler => { defaultSession.permissionRequest = handler }
   class BrowserWindow extends EventEmitter {
     constructor(options) {
       super()
@@ -82,8 +90,15 @@ export async function createHostHarness(t, { platform = 'linux', authenticate = 
       this.focusable = options.focusable ?? true
       this.mouseIgnored = false
       this.lifecycleCalls = []
-      const contents = Object.assign(new EventEmitter(), { setWindowOpenHandler(handler) { this.openHandler = handler } })
+      const contents = Object.assign(new EventEmitter(), {
+        setWindowOpenHandler(handler) { this.openHandler = handler },
+        getURL: () => this.page.location.href,
+        printToPDF: async () => Buffer.from('%PDF-1.7\nfixture'),
+      })
+      const debuggerEvents = new EventEmitter()
       contents.debugger = {
+        on: debuggerEvents.on.bind(debuggerEvents),
+        emit: debuggerEvents.emit.bind(debuggerEvents),
         attach() {},
         sendCommand: async (method, params = {}) => {
           this.commands.push({ method, params })
@@ -94,6 +109,7 @@ export async function createHostHarness(t, { platform = 'linux', authenticate = 
             return result
           }
           if (method === 'Page.getLayoutMetrics') return { cssVisualViewport: { clientWidth: this.options.width - 100, clientHeight: this.options.height - 100 } }
+          if (method === 'Page.getFrameTree') return { frameTree: { frame: { id: 'fixture-frame', url: this.page.location.href } } }
           if (method === 'Runtime.evaluate') {
             try { return { result: { value: await vm.runInContext(params.expression, this.page.context, { timeout: 1000 }) } } }
             catch (error) { return { exceptionDetails: { text: error.message } } }
@@ -157,13 +173,24 @@ export async function createHostHarness(t, { platform = 'linux', authenticate = 
   })
   const context = vm.createContext({
     require(name) {
-      if (name === 'electron') return { app, BrowserWindow, screen, session: { defaultSession }, Menu: { buildFromTemplate: items => items } }
+      if (name === 'electron') return { app, BrowserWindow, screen, ipcMain, session: { defaultSession }, Menu: { buildFromTemplate: items => items } }
       if (name === 'node:net') return { createServer(handler) { accept = handler; return server } }
       if (name === 'node:fs') return {
         mkdirSync: path => filesystem.mkdirSync(path),
         mkdtempSync: path => filesystem.mkdtempSync(path),
         statSync: path => filesystem.statSync(path),
+        writeFileSync: (...args) => filesystem.writeFileSync(...args),
+        realpathSync: path => filesystem.realpathSync(path),
+        accessSync: (...args) => filesystem.accessSync(...args),
+        constants: filesystem.constants,
       }
+      if (name === './native-ui.cjs') {
+        const module = { exports: {} }
+        const body = readFileSync(new URL('../../host/native-ui.cjs', import.meta.url), 'utf8')
+        vm.runInContext(`(function(require,module,exports,__dirname) { ${body}\n })`, context)(context.require, module, module.exports, '/fixture/host')
+        return module.exports
+      }
+      if (name === '../src/components.json') return JSON.parse(readFileSync(new URL('../../src/components.json', import.meta.url), 'utf8'))
       if (name === 'node:path' || name === 'node:crypto') return require(name)
       throw new Error(`Unexpected host import: ${name}`)
     },
@@ -191,7 +218,7 @@ export async function createHostHarness(t, { platform = 'linux', authenticate = 
   if (authenticate) send({ id: 0, op: 'hello', token: 'fixture-token' })
   let nextId = 1
   const h = {
-    ...state, app, natives, responses, output, server, connection, defaultSession, filesystem, timeouts, intervals, flush,
+    ...state, app, ipcMain, natives, responses, output, server, connection, defaultSession, filesystem, timeouts, intervals, flush,
     send, accept, socket,
     submit(op, conversationId = 'A', payload = {}) {
       const id = nextId++

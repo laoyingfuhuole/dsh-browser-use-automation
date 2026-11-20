@@ -12,11 +12,38 @@
  * 才在网页自己的 JavaScript 上下文执行，二者通过 CDP 传递可序列化的数据。
  */
 
-const { app, BrowserWindow, Menu, screen, session } = require('electron')
+const { app, BrowserWindow, Menu, screen, session, ipcMain } = require('electron')
 const { createServer } = require('node:net')
 const { randomBytes, createHmac } = require('node:crypto')
 const { mkdirSync, mkdtempSync, statSync } = require('node:fs')
 const { isAbsolute, join, basename, win32 } = require('node:path')
+const { installNativeUI, createNativeUI } = require('./native-ui.cjs')
+const componentDefinitions = require('../src/components.json')
+let enabledComponents = new Set(process.env.BROWSER_USE_COMPONENTS === undefined
+  ? Object.keys(componentDefinitions) : JSON.parse(process.env.BROWSER_USE_COMPONENTS))
+
+function componentEnabled(name) { return enabledComponents.has(name) }
+
+function configureComponents(enabled) {
+  if (!Array.isArray(enabled) || enabled.some(name => !Object.hasOwn(componentDefinitions, name))) {
+    throw new TypeError('invalid browser component configuration')
+  }
+  const removed = [...enabledComponents].filter(name => !enabled.includes(name))
+  enabledComponents = new Set(enabled)
+  for (const record of windows.values()) {
+    for (const job of record.jobs) if (removed.includes(job.message.component)) {
+      cancelRequest(job, new Error(`browser component disabled: ${job.message.component}`))
+    }
+    if (removed.includes('requests')) for (const job of record.jobs) if (job.message.op === 'upload') {
+      cancelRequest(job, new Error('webpage request-handling component disabled during upload'))
+    }
+    record.updateComponents()
+  }
+  if (!componentEnabled('files')) for (const download of activeDownloads.values()) {
+    download.entry.error = 'download cancelled because file component was disabled'
+    download.item.cancel()
+  }
+}
 
 // 仅显式指定时改存储位置，且必须早于 ready；平时沿用现有默认资料和登录态。
 // BROWSER_USE_* 是既有配置协议；包改名不改环境变量和默认用户资料目录，保留登录。
@@ -58,6 +85,7 @@ const READ_MAX_CHARS = 24_000
 const downloadRecords = new Map()
 const downloadOwners = new Map()
 const activeDownloads = new Map()
+const nativeControllers = new Map()
 const DOWNLOAD_HISTORY_LIMIT = 50
 let downloadDirectory
 
@@ -71,9 +99,9 @@ function trimDownloads(history) {
 
 function handleDownload(event, item, contents) {
   const owner = downloadOwners.get(contents)
-  if (!owner || quitting) {
+  if (!owner || quitting || !componentEnabled('files')) {
     event.preventDefault()
-    console.error('[dsh-browser-use-automation] rejected download without a live conversation owner')
+    console.error('[dsh-browser-use-automation] download rejected: file component disabled or no live conversation owner')
     return
   }
   const history = downloadRecords.get(owner.conversationId)
@@ -156,9 +184,18 @@ function cancelRequest(job, error) {
   // 这里不释放执行中的 CDP 屏障：它仍可能修改网页。只停止后续步骤；
   // 真正卡住时由用户明确选择 reset/close 销毁本窗口，不自动丢失多轮现场。
 }
+
+function createRequestJob(message, record) {
+  const job = { message, record, error: null, done: false, timer: null, cancelWaiters: new Set() }
+  requests.set(message.id, job)
+  record.jobs.add(job)
+  job.timer = setTimeout(() => cancelRequest(job, new Error('browser request deadline exceeded; inspect state before retrying')), REQUEST_TIMEOUT_MS)
+  return job
+}
 const operations = new Set([
   'navigate', 'snapshot', 'click', 'hover', 'type', 'insertText', 'scroll', 'key', 'screenshot', 'eval',
-  'wait', 'state', 'read', 'downloads', 'windowShow', 'windowHide', 'windowState', 'back', 'reload', 'close', 'reset',
+  'wait', 'state', 'read', 'downloads', 'requests', 'respond', 'upload', 'pdf',
+  'windowShow', 'windowHide', 'windowState', 'back', 'reload', 'close', 'reset',
 ])
 
 function updateDockMenu() {
@@ -204,10 +241,11 @@ function createConversation(conversationId) {
   let win = null
   let refs = new Map()
   let documentVersion = 0
+  let nativeUI = null
   const elementRegistryKey = '__dsh_refs_' + randomBytes(16).toString('hex')
   // 每代窗口独立签发游标，跨对话、close/reset 和 host 重启都不能误用旧读取位置。
   const readCursorKey = randomBytes(32)
-  function invalidateRefs() { refs.clear(); documentVersion += 1 }
+  function invalidateRefs() { refs.clear(); documentVersion += 1; nativeUI?.invalidate() }
   let revealReady = false
   let disposed = false
   // 原生关闭意图只属于这一代记录；RPC close/reset、初始化失败和宿主退出
@@ -230,9 +268,23 @@ function createConversation(conversationId) {
       activeJob = job
       try {
         assertOperation()
+        nativeUI.assertUnblocked()
         return await dispatch(job.message)
       } finally { activeJob = null }
     },
+    nativeRequest(message, job) {
+      const guard = () => {
+        assertLive()
+        if (job.error) throw job.error
+      }
+      guard()
+      if (message.op === 'requests') return nativeUI.status()
+      if (message.op === 'respond') return nativeUI.resolve(message.requestId, message.accept, message.value)
+      if (message.op === 'upload') return nativeUI.upload(message.requestId, message.paths, guard)
+      throw new Error('unsupported native request')
+    },
+    assertPageAvailable() { nativeUI?.assertUnblocked() },
+    updateComponents() { nativeUI?.setEnabled({ files: componentEnabled('files'), requests: componentEnabled('requests') }) },
     onDisplaysChanged() {
       if (WINDOWS_TASKBAR && isReady() && backgrounded) {
         win.setOpacity(park() ? 1 : 0)
@@ -313,7 +365,9 @@ function createConversation(conversationId) {
     if (disposed) return
     disposed = true
     failure = error
+    nativeUI?.invalidate()
     if (win !== null) downloadOwners.delete(win.webContents)
+    if (win !== null) nativeControllers.delete(win.webContents)
     for (const download of activeDownloads.values()) {
       if (download.owner === record) {
         download.entry.error = 'download cancelled because its conversation window closed or reset'
@@ -1018,6 +1072,8 @@ function createConversation(conversationId) {
         return pageState()
       case 'read':
         return readText(message)
+      case 'pdf':
+        return nativeUI.pdf()
       case 'windowShow':
         return revealWindow()
       case 'windowHide':
@@ -1171,11 +1227,33 @@ function createConversation(conversationId) {
         session: session.defaultSession,
         sandbox: true,
         nodeIntegration: false,
+        // Electron 仅在此开关启用时才对子框架运行 preload；仍强制沙箱和隔离，网页不获得 Node。
+        nodeIntegrationInSubFrames: true,
         contextIsolation: true,
         backgroundThrottling: false,
+        // 原生 JS 对话框兜底禁止；preload 把同步 alert/confirm/prompt 转为主对话反问。
+        disableDialogs: true,
       },
     })
     downloadOwners.set(win.webContents, record)
+    nativeUI = createNativeUI({
+      contents: win.webContents,
+      version: () => documentVersion,
+      interrupt: message => {
+        if (activeJob) cancelRequest(activeJob, new Error(message))
+        for (const job of record.jobs) if (job.message.op === 'upload') cancelRequest(job, new Error(message))
+      },
+      assertLive,
+      assertOperation,
+      whileLive,
+      command: (method, params, guard) => whileLive(() => {
+        guard?.()
+        return win.webContents.debugger.sendCommand(method, params)
+      }),
+      directory: downloadDirectory,
+      enabled: { files: componentEnabled('files'), requests: componentEnabled('requests') },
+    })
+    nativeControllers.set(win.webContents, nativeUI)
     // 首次 loadURL 也可能触发原生焦点请求，不能等 about:blank/CDP 就绪后才禁止聚焦和鼠标命中。
     setBackgroundProperties()
     // 页面不能再开第二个原生窗口。target=_blank 等 HTTP(S) 链接改在当前
@@ -1189,9 +1267,11 @@ function createConversation(conversationId) {
     // 点击链接、脚本跳转、前进后退和 SPA 路由都必须作废旧 ref；仅主框架影响本窗口。
     win.webContents.on('did-start-navigation', (details, _url, _inPlace, legacyMain) => {
       if ((details.isMainFrame ?? legacyMain) === true) invalidateRefs()
+      else nativeUI.invalidate()
     })
     win.webContents.on('did-navigate-in-page', (_event, _url, isMainFrame) => {
       if (isMainFrame) invalidateRefs()
+      else nativeUI.invalidate()
     })
     win.webContents.on('did-create-window', child => {
       try { child.destroy() } catch {}
@@ -1209,6 +1289,10 @@ function createConversation(conversationId) {
     win.webContents.on('destroyed', () => dispose())
     win.webContents.on('render-process-gone', (_event, details) => {
       dispose(new Error(`renderer gone: ${details.reason}`))
+    })
+    win.webContents.on('preload-error', (_event, path, error) => {
+      // 不能在桥接失效后继续让页面偷偷回到原生弹框或默认拒绝，必须明确中止当前窗口。
+      dispose(new Error(`background UI preload failed (${path}): ${error.message}`))
     })
     // macOS/Linux 的原生关闭仍只退出人工查看；宿主退出时放行关闭。
     // Windows 的 X/Alt+F4 则明确丢弃本代窗口，立即拒绝其执行中与排队请求。
@@ -1270,6 +1354,13 @@ function createConversation(conversationId) {
     assertLive()
     win.webContents.debugger.attach('1.3')
     await cdp('Page.enable')
+    win.webContents.debugger.on('message', (_event, method, params) => {
+      if (method !== 'Page.fileChooserOpened' || disposed) return
+      nativeUI.fileChooser(params).catch(error => {
+        console.error(`[dsh-browser-use-automation] file chooser interception failed: ${error.message}`)
+      })
+    })
+    await cdp('Page.setInterceptFileChooserDialog', { enabled: true })
     assertLive()
     setBackgroundProperties()
     try {
@@ -1324,6 +1415,10 @@ function onLine(line) {
     return
   }
   const fail = error => send({ id: message.id, ok: false, error: String(error && error.message ? error.message : error) })
+  if (message.op === 'components') {
+    try { configureComponents(message.enabled); send({ id: message.id, ok: true, result: { configured: true } }) } catch (error) { fail(error) }
+    return
+  }
   // 路由只认外层 conversationId；先校验再分配窗口，错误请求没有创建副作用。
   if (typeof message.conversationId !== 'string' || message.conversationId.trim() === '') {
     fail(new Error('conversationId must be a nonblank string'))
@@ -1345,6 +1440,16 @@ function onLine(line) {
     fail(new Error(`unknown op: ${name}`))
     return
   }
+  if (message.component !== undefined && (!componentEnabled(message.component)
+    || !componentDefinitions[message.component]?.operations.includes(message.op))) {
+    fail(new Error(`browser component is disabled or does not allow this operation: ${message.component}`))
+    return
+  }
+  if ((['upload', 'pdf', 'downloads'].includes(message.op) && !componentEnabled('files'))
+    || (['requests', 'respond', 'upload'].includes(message.op) && !componentEnabled('requests'))) {
+    fail(new Error('required browser file/request component is disabled'))
+    return
+  }
   if (quitting) {
     fail(new Error('host shutting down'))
     return
@@ -1355,6 +1460,25 @@ function onLine(line) {
     send({ id: message.id, ok: true, result: { downloads: downloadRecords.get(message.conversationId) || [] } })
     return
   }
+  if (['requests', 'respond', 'upload'].includes(message.op)) {
+    if (!record) {
+      if (message.op === 'requests') send({ id: message.id, ok: true, result: { requests: [], audit: [] } })
+      else fail(new Error('no live conversation window for this browser request'))
+      return
+    }
+    // 同步网页对话框会挂起页面 JS；审核与回答必须绕过页面队列，否则无法解除阻塞。
+    const job = createRequestJob(message, record)
+    Promise.resolve().then(() => record.ready).then(async () => {
+      if (job.done) return
+      try {
+        const result = await record.nativeRequest(message, job)
+        record.assertLive()
+        if (job.error) throw job.error
+        finishRequest(job, null, result)
+      } catch (error) { finishRequest(job, error) }
+    }, error => finishRequest(job, error))
+    return
+  }
   if (message.op === 'close' || message.op === 'reset') {
     // 控制面不进页面队列，否则永远等不到卡住的 eval/wait 结束。
     // 仅用户显式调用才丢弃窗口现场；Cookie 等共享存储不清理。
@@ -1363,10 +1487,8 @@ function onLine(line) {
     return
   }
   if (record === undefined) record = createConversation(message.conversationId)
-  const job = { message, record, error: null, done: false, timer: null, cancelWaiters: new Set() }
-  requests.set(message.id, job)
-  record.jobs.add(job)
-  job.timer = setTimeout(() => cancelRequest(job, new Error('browser request deadline exceeded; reset explicitly if the window remains blocked')), REQUEST_TIMEOUT_MS)
+  try { record.assertPageAvailable() } catch (error) { fail(error); return }
+  const job = createRequestJob(message, record)
   record.queue = record.queue.then(async () => {
     if (job.done) return
     try {
@@ -1424,6 +1546,7 @@ async function start() {
   downloadDirectory = configured || join(process.env.DSH_HOME || join(app.getPath('home'), '.dsh'), 'browser-use', 'downloads')
   // 必须在任何页面创建前同步注册，并在事件内指定路径；否则 Electron 会弹原生保存对话框。
   session.defaultSession.on('will-download', handleDownload)
+  installNativeUI(session.defaultSession, ipcMain, nativeControllers)
   if (HIDE_DOCK) app.dock?.hide()
   updateDockMenu()
   if (WINDOWS_TASKBAR) {

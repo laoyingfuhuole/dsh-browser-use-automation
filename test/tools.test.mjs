@@ -23,13 +23,13 @@ function assertOutput(schema, value) {
   }
 }
 
-async function fixture(t, { failAt } = {}) {
+async function fixture(t, { failAt, ask } = {}) {
   const directory = mkdtempSync(join(tmpdir(), 'browser-use-tools-'))
   t.after(() => rmSync(directory, { recursive: true, force: true }))
   const definitions = new Map()
   const calls = []
   const client = { async call(op, payload, signal) { calls.push({ op, payload, signal }); return client.result }, result: {} }
-  const context = vm.createContext({ Buffer })
+  const context = vm.createContext({ Buffer, AbortSignal })
   const url = new URL('../src/tools.js', import.meta.url)
   const module = new vm.SourceTextModule(readFileSync(url, 'utf8'), { context, identifier: url.href })
   await module.link(async specifier => {
@@ -39,10 +39,11 @@ async function fixture(t, { failAt } = {}) {
     }, { context })
   })
   await module.evaluate()
-  const register = () => module.namespace.registerTools({ tools: { register(definition) {
+  const register = options => module.namespace.registerTools({ get: name => name === 'userQuestions' && ask ? { ask } : undefined, tools: { register(definition) {
     if (definition.name === failAt) throw new Error('fixture registration failed')
     definitions.set(definition.name, definition)
-  } } }, client, { screenshotDir: directory })
+    return () => definitions.delete(definition.name)
+  } } }, client, { screenshotDir: directory }, options)
   const exec = { agent: { id: 'trusted-chat' }, signal: new AbortController().signal }
   return { definitions, calls, client, register, exec, directory, module }
 }
@@ -50,7 +51,7 @@ async function fixture(t, { failAt } = {}) {
 test('all tools register once with executable schemas and renderers', async t => {
   const h = await fixture(t)
   h.register()
-  assert.equal(h.definitions.size, 19)
+  assert.equal(h.definitions.size, 23)
   for (const definition of h.definitions.values()) {
     assert.equal(typeof definition.execute, 'function')
     assert.equal(typeof definition.output.render, 'function')
@@ -250,7 +251,62 @@ test('eval render distinguishes host truncation, display shortening and assert-s
 test('registration errors include the tool name and stop subsequent registration', async t => {
   const h = await fixture(t, { failAt: 'browser_use_click' })
   assert.throws(h.register, /could not register browser_use_click.*fixture registration failed/)
-  assert.deepEqual([...h.definitions.keys()], ['browser_use_open', 'browser_use_snapshot'])
+  assert.deepEqual([...h.definitions.keys()], [], 'partial group registrations must roll back')
+})
+
+test('component-scoped registration exposes only its tools and unload removes them', async t => {
+  const h = await fixture(t)
+  const controller = new AbortController()
+  const remove = h.register({ names: ['browser_use_read'], signal: controller.signal })
+  assert.deepEqual([...h.definitions.keys()], ['browser_use_read'])
+  const tool = h.definitions.get('browser_use_read')
+  await tool.execute({}, h.exec)
+  assert.equal(h.calls.length, 1)
+  controller.abort(new Error('read component disabled'))
+  await assert.rejects(tool.execute({}, h.exec), /read component disabled/)
+  assert.equal(h.calls.length, 1)
+  remove()
+  remove()
+  assert.equal(h.definitions.size, 0)
+})
+
+test('component unload aborts a pending human approval before any browser acceptance', async t => {
+  let resolveApproval
+  let question
+  const h = await fixture(t, { ask: request => {
+    question = request
+    return new Promise(resolve => { resolveApproval = resolve })
+  } })
+  const controller = new AbortController()
+  h.register({ names: ['browser_use_respond'], signal: controller.signal })
+  h.client.result = { requests: [{ id: 'dialog', kind: 'confirm', url: 'https://example.test', message: 'Confirm' }], audit: [] }
+  const work = h.definitions.get('browser_use_respond').execute({ requestId: 'dialog', accept: true }, h.exec)
+  await new Promise(resolve => setImmediate(resolve))
+  assert.ok(question)
+  controller.abort(new Error('component removed'))
+  assert.equal(question.signal.aborted, true)
+  resolveApproval({ answers: [{ id: question.questions[0].id, selected: ['仅本次允许'] }] })
+  await assert.rejects(work, /approval cancelled/)
+  assert.equal(h.calls.length, 1)
+})
+
+test('turning request handling off aborts a file-component approval and never dispatches upload', async t => {
+  let resolveApproval
+  let question
+  const h = await fixture(t, { ask: request => {
+    question = request
+    return new Promise(resolve => { resolveApproval = resolve })
+  } })
+  const requestController = new AbortController()
+  h.register({ names: ['browser_use_upload'], approvalSignal: () => requestController.signal })
+  h.client.result = { requests: [{ id: 'upload', kind: 'upload', url: 'https://example.test', message: 'Upload' }], audit: [] }
+  const work = h.definitions.get('browser_use_upload').execute({ requestId: 'upload', paths: ['/fixture/file.txt'] }, h.exec)
+  await new Promise(resolve => setImmediate(resolve))
+  assert.ok(question)
+  requestController.abort(new Error('requests disabled'))
+  resolveApproval({ answers: [{ id: question.questions[0].id, selected: ['仅本次允许'] }] })
+  await assert.rejects(work, /approval cancelled/)
+  assert.equal(h.calls.length, 1)
 })
 
 test('screenshots decode base64 into unique files and fullPage remains unimplemented', async t => {
@@ -286,6 +342,138 @@ test('download query renders actual paths and terminal states and matches the ho
   const failed = { downloads: [{ id: 'two', filename: 'report.pdf', state: 'failed', receivedBytes: 0, totalBytes: 12, error: 'disk denied' }] }
   assertOutput(tool.output.schema, failed)
   assert.match(tool.output.render({}, failed)[0].text, /Error: disk denied/)
+})
+
+test('browser acceptance is gated by a main-conversation human answer and preserves prompt text', async t => {
+  const asked = []
+  const h = await fixture(t, { ask: async request => {
+    asked.push(request)
+    return { answers: [{ id: request.questions[0].id, selected: ['仅本次允许'] }] }
+  } })
+  h.register()
+  h.client.call = async (op, payload) => {
+    h.calls.push({ op, payload })
+    if (op === 'requests') return { requests: [{ id: 'pending', kind: 'prompt', url: 'https://example.test', message: 'Proceed?', defaultValue: 'default' }], audit: [] }
+    return { id: 'pending', accepted: payload.accept }
+  }
+  const result = await h.definitions.get('browser_use_respond').execute({ requestId: 'pending', accept: true, value: 'answer' }, h.exec)
+  assert.equal(result.accepted, true)
+  assert.equal(asked.length, 1)
+  assert.equal(asked[0].agent, h.exec.agent)
+  assert.equal(asked[0].signal, h.exec.signal)
+  assert.equal(asked[0].questions[0].intent.kind, 'approval')
+  assert.match(asked[0].questions[0].detail, /拟提交文本：answer/)
+  assert.equal(h.calls.at(-1).payload.value, 'answer')
+})
+
+test('skipped/negative approval never accepts a browser request or uploads files', async t => {
+  for (const selected of [[], ['拒绝']]) {
+    const h = await fixture(t, { ask: async request => ({ answers: [{ id: request.questions[0].id, selected }] }) })
+    h.register()
+    h.client.call = async (op, payload) => {
+      h.calls.push({ op, payload })
+      if (op === 'requests') return { requests: [{ id: 'file', kind: 'upload', url: 'https://example.test', message: 'Upload' }], audit: [] }
+      return { id: 'file', accepted: false }
+    }
+    const result = await h.definitions.get('browser_use_upload').execute({ requestId: 'file', paths: ['/fixture/report.pdf'] }, h.exec)
+    assert.equal(result.files, 0)
+    assert.equal(h.calls.some(call => call.op === 'upload'), false)
+    assert.equal(h.calls.at(-1).payload.accept, false)
+  }
+})
+
+test('missing main-conversation service fails explicitly rather than trusting a model confirm flag', async t => {
+  const h = await fixture(t)
+  h.register()
+  h.client.result = { requests: [{ id: 'dialog', kind: 'confirm', url: 'https://example.test', message: 'confirm' }], audit: [] }
+  await assert.rejects(h.definitions.get('browser_use_respond').execute({ requestId: 'dialog', accept: true }, h.exec), /userQuestions service is unavailable/)
+  assert.equal(h.calls.length, 1)
+})
+
+test('cancelled main-conversation approval cannot accept a pending browser request', async t => {
+  const controller = new AbortController()
+  const h = await fixture(t, { ask: async request => {
+    controller.abort()
+    return { answers: [{ id: request.questions[0].id, selected: ['仅本次允许'] }] }
+  } })
+  h.register()
+  h.client.result = { requests: [{ id: 'dialog', kind: 'confirm', url: 'https://example.test', message: 'confirm' }], audit: [] }
+  await assert.rejects(h.definitions.get('browser_use_respond').execute({ requestId: 'dialog', accept: true }, { ...h.exec, signal: controller.signal }), /approval cancelled/)
+  assert.equal(h.calls.length, 1)
+})
+
+test('unsupported browser requests reject acceptance before asking and can be dismissed explicitly', async t => {
+  let questions = 0
+  const h = await fixture(t, { ask: async () => { questions++; throw new Error('must not ask') } })
+  h.register()
+  h.client.call = async (op, payload) => {
+    h.calls.push({ op, payload })
+    if (op === 'requests') return { requests: [{ id: 'blocked', kind: 'unsupported', url: 'https://example.test/', message: 'showDirectoryPicker' }], audit: [] }
+    return { id: 'blocked', accepted: false }
+  }
+  const tool = h.definitions.get('browser_use_respond')
+  await assert.rejects(tool.execute({ requestId: 'blocked', accept: true }, h.exec), /unsupported/)
+  const result = await tool.execute({ requestId: 'blocked', accept: false }, h.exec)
+  assert.equal(result.accepted, false)
+  assert.equal(questions, 0)
+})
+
+test('approved file selection traverses host requests, DSH approval and one-shot upload with valid output schemas', async t => {
+  const host = await createHostHarness(t)
+  let asked = 0
+  const h = await fixture(t, { ask: async request => {
+    asked++
+    assert.match(request.questions[0].detail, /https:\/\/example.test\//)
+    return { answers: [{ id: request.questions[0].id, selected: ['仅本次允许'] }] }
+  } })
+  h.register()
+  h.client.call = async (op, payload) => {
+    const response = await host.run(op, payload.conversationId, payload)
+    if (!response.ok) throw new Error(response.error)
+    return response.result
+  }
+  await host.run('state', 'trusted-chat')
+  const win = host.natives[0]
+  win.page.location.href = 'https://example.test/'
+  win.webContents.debugger.emit('message', {}, 'Page.fileChooserOpened', { frameId: 'fixture-frame', backendNodeId: 10, mode: 'selectSingle' })
+  await host.flush()
+  const inspect = h.definitions.get('browser_use_requests')
+  const status = await inspect.execute({}, h.exec)
+  assertOutput(inspect.output.schema, status)
+  assert.equal(status.requests[0].kind, 'upload')
+  host.filesystem.files.set('/fixture/upload.pdf', 20)
+  win.onCommand = method => method === 'DOM.describeNode'
+    ? Promise.resolve({ node: { nodeName: 'INPUT', attributes: ['type', 'file'] } })
+    : undefined
+  const upload = h.definitions.get('browser_use_upload')
+  const input = { requestId: status.requests[0].id, paths: ['/fixture/upload.pdf'] }
+  const result = await upload.execute(input, h.exec)
+  assertOutput(upload.output.schema, result)
+  assert.equal(result.files, 1)
+  assert.equal(asked, 1)
+  await assert.rejects(upload.execute(input, h.exec), /stale/)
+  assert.equal(asked, 1)
+  const after = await inspect.execute({}, h.exec)
+  assertOutput(inspect.output.schema, after)
+  assert.equal(after.audit.at(-1).outcome, 'upload-dispatched')
+})
+
+test('file upload approval shows exact paths and current request id remains bound across the human wait', async t => {
+  let reviewed
+  const h = await fixture(t, { ask: async request => {
+    reviewed = request.questions[0].detail
+    return { answers: [{ id: request.questions[0].id, selected: ['仅本次允许'] }] }
+  } })
+  h.register()
+  h.client.call = async (op, payload) => {
+    h.calls.push({ op, payload })
+    if (op === 'requests') return { requests: [{ id: 'file', kind: 'upload', url: 'https://example.test/upload', message: 'Upload' }], audit: [] }
+    throw new Error('stale browser request')
+  }
+  await assert.rejects(h.definitions.get('browser_use_upload').execute({ requestId: 'file', paths: ['/fixture/quoted file.pdf'] }, h.exec), /stale browser request/)
+  assert.match(reviewed, /https:\/\/example.test\/upload/)
+  assert.match(reviewed, /\/fixture\/quoted file.pdf/)
+  assert.equal(h.calls.at(-1).payload.requestId, 'file')
 })
 
 test('snapshot renderer preserves refs and clearly reports empty or truncated results', async t => {

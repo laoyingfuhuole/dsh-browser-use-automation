@@ -27,6 +27,31 @@ macOS 真实 Electron 回归已覆盖主要路径；Windows 新修复已通过�
 - `browser_use_snapshot` 返回编号元素 ref；ref 只在当次快照内有效。
 - DSH 界面在后台时仍可工作；不移除 display surface，因此 CDP 输入不会被丢弃。
 
+## 组件开关（开发中，尚未发布）
+
+同一个安装包通过 `cordis.patch.yml` 提供六个独立组件行，可以在 DSH 插件页分别开关；所有工具组件共享一个 `browserUse` 核心服务和一个惰性启动的 Electron host，不会每组启动一个浏览器。默认六组都启用，工具名及默认操作行为保持不变。
+
+| 组件 | 配置行 ID / 模块入口 | 内容 |
+| --- | --- | --- |
+| 后台浏览器核心 | `dsh-browser-use-automation` / 包根入口 | 提供共享进程、窗口、队列、取消及原生 UI 拦截，不直接注册工具 |
+| 基础网页操作 | `browser-use-basic` / `dsh-browser-use-automation/basic` | open、snapshot、click、hover、type、insert_text、scroll、key、screenshot、wait、assert、state、back、reload、close、reset |
+| 正文读取 | `browser-use-read` / `dsh-browser-use-automation/read` | read，包括区域读取、预算和游标续读 |
+| 文件与 PDF 导出 | `browser-use-files` / `dsh-browser-use-automation/files` | downloads、upload、pdf；上传还需网页请求处理组件 |
+| 网页请求处理 | `browser-use-requests` / `dsh-browser-use-automation/requests` | requests、respond；通过 DSH 主对话逐次审核 |
+| 高级 JavaScript | `browser-use-eval` / `dsh-browser-use-automation/eval` | 仅向模型直接暴露 eval |
+
+模块导出配有独立中英文显示名称。关闭某个工具组件会撤销它的工具注册与专属提示，取消该组件的排队/运行调用及待审人机问答，不关闭其他组件的页面。重新开启注册一次新实例，旧工具引用或旧问答不能恢复授权。已发出的 CDP 调用仍可能完成，不回滚网站效果；仍需先检查页面，禁止自动重试写操作。
+
+- 关闭核心：Cordis 将依赖它的全部工具组件卸载/挂起，释放共享 host、拒绝请求并关闭窗口；Cookie 等持久化数据不主动清除。重新开启核心后，原本启用的工具组件自动恢复，但旧 DOM、未提交表单、refs、游标和请求不恢复。应先结束任务或确认放弃现场。
+- 关闭正文读取/高级 JS/基础操作：仅撤销该组，不关闭共享窗口。基础操作关闭后其他组仍可作用于已有页面，但没有导航/点击等入口。所有工具组关闭而核心保留时，不自动清理已有窗口；再次启用可继续现场。
+- 关闭文件组：取消仍在进行的下载，后续原生下载直接拒绝（不回退保存框）；既有保存文件及内存历史保留，重新开启后可查询。上传/PDF 及其待处理请求失效，不影响仍启用的网页确认框。
+- 关闭请求处理：拒绝并释放未完成弹框/权限请求，后续请求明确拒绝，不自动同意、不弹系统框；上传要求文件组和请求组同时开启。关闭请求组也会取消文件组里等待的主对话审批，迟到许可无效。文件组仍可下载/导出 PDF。
+- 关闭 eval 只移除模型直接调用入口，assert 和其他工具内部仍可执行所需 JavaScript；这不是权限隔离沙箱。组件开关只覆盖插件管理的调用，不能防止其他系统的浏览器工具或页面脚本做相同操作。
+
+**更新迁移：**保留原核心行 `id` 与模块名，所以已有该行的 `disabled`、窗口尺寸和 screenshotDir 配置继续有效。原始 bundle 安装在重载新补丁后会获得其他五个默认启用行；旧核心行禁用时，这些行依赖缺失而不注册工具。旧版手工只加载包根模块、没有启用 bundle 的配置需要改为启用本包 bundle，或显式增加上述子入口；不能只加载根入口就期待全部工具。插件不会自行改写正在使用的 profile；市场/HMR 是否可热应用，以 DSH 返回结果为准，不能把“包下载完成”当作组件已生效。
+
+全局通用约束只由核心贡献，各组提示随开关移除，因此关闭不用的组会减少提供给模型的工具 schema 和专属说明。实际 token/费用仍受 DSH 请求组装和模型缓存策略影响，不承诺固定节省比例。
+
 ## 工具
 
 | 工具 | 用途 |
@@ -41,6 +66,10 @@ macOS 真实 Electron 回归已覆盖主要路径；Windows 新修复已通过�
 | `browser_use_insert_text` | 在当前选区插入文本，无需快照 ref |
 | `browser_use_screenshot` | 保存 JPEG 并返回路径 |
 | `browser_use_downloads` | 查询本对话后台下载的保存路径、进度和最终状态 |
+| `browser_use_requests` | 查看本对话待处理的网页弹框、文件选择、权限和打印请求 |
+| `browser_use_respond` | 拒绝请求，或经 DSH 主对话反问后接受 alert/confirm/prompt 与受支持权限 |
+| `browser_use_upload` | 经主对话明确授权后，向待处理的 HTML 文件选择器提供指定文件 |
+| `browser_use_pdf` | 后台导出当前页面为 PDF，不调用实体打印机或系统打印框 |
 | `browser_use_eval` | 执行页面 JavaScript |
 | `browser_use_wait` | 等待加载 / 选择器 / 文本 / URL |
 | `browser_use_assert` | 校验选择器、文本、URL 或 JS 真值 |
@@ -71,7 +100,43 @@ host 在创建页面前对共享 Session 注册一次 `will-download`，在事�
 - 工具取消/超时不回滚已经发起的下载，也不自动取消它；查询状态后再决定下一步，禁止自动重复点击下载按钮。close/reset 或插件卸载会取消活动下载，取消/失败可能留下部分文件，本插件不会自动删除用户已保存或未完成文件。
 - 路径准备失败时阻止该次下载并记录错误，不能回退到原生保存框；来源不属于存活对话窗口的下载直接拒绝并记录日志，不分配到其他对话。
 
-推荐流程：点击下载 → `browser_use_downloads` → 必要时再次查询，直到 `completed` 后使用返回路径。直接导航到附件 URL 仍可能报告“导航转为下载”，这是页面没有加载成功，不代表文件失败；应查询下载状态，不能自动重试导航或点击。网页使用 File System Access API 自行弹出的文件选择器、打印/另存网页等其他系统对话框不属于此下载事件路径，尚不承诺接管。
+推荐流程：点击下载 → `browser_use_downloads` → 必要时再次查询，直到 `completed` 后使用返回路径。直接导航到附件 URL 仍可能报告“导航转为下载”，这是页面没有加载成功，不代表文件失败；应查询下载状态，不能自动重试导航或点击。打印与 File System Access API 不属于此下载事件路径，分别按下节的 PDF 导出和显式不支持策略处理。
+
+### 常用网页弹框与主对话授权
+
+插件通过隔离的沙箱 preload 接管网页 `alert()` / `confirm()` / `prompt()`。网页的同步函数仍等待回答并返回原本的值类型，不把 confirm 改成 Promise，也不默认确认。主框架和子框架运行同一受限 preload；保留 `sandbox: true`、`contextIsolation: true`、`nodeIntegration: false`，`nodeIntegrationInSubFrames` 仅用于让 Electron 在子框架运行沙箱 preload。实测主页面和子框架都没有 `require` / `process` / `Buffer`。原生 JS 弹框另用 `disableDialogs` 兜底禁止；preload 加载失败会明确关闭该窗口，避免静默回退。
+
+操作触发请求后会返回 `request is pending`，这表示原页面操作可能仍在等待，**不能重新点击或重新执行提交**。推荐流程：
+
+1. 调用 `browser_use_requests` 查看请求的 `id`、`kind`、来源 URL 和网页消息。
+2. 拒绝时调用 `browser_use_respond({ requestId, accept: false })`。
+3. 接受时调用 `browser_use_respond({ requestId, accept: true })`；prompt 可加 `value` 作为拟提交答案。
+4. 插件调用官方 `ctx.userQuestions.ask`，在该工具所属的 DSH 主对话询问用户，展示来源、网页消息及拟提交文本。只有用户选择“仅本次允许”才继续；拒绝或空答复按拒绝处理，取消/超时/反问服务不可用明确报错且不放行。
+5. 回答完成后先读取页面确认结果，不重试旧动作。alert 的拒绝只是结束提示，不能撤销其之前的网页副作用。
+
+反问依赖宿主已启用的 `userQuestions` 服务，本插件不安装或重配 DSH 服务。若缺少该服务仍可查看/拒绝请求，但接受和上传会明确失败；子代理等无权发起主对话问题的调用者遵循 DSH 服务限制。主对话等待预算为 5 分钟，工具取消后不自动把迟到回答用于其他请求。没有永久许可或“模型 confirm=true 即授权”的旁路。
+
+请求按对话、具体随机 ID 和页面代次绑定；导航（含子框架变化）、close/reset 和页面销毁会拒绝旧请求并释放等待。查询/回答/上传走带期限与取消的控制面，绕过被同步 JS 弹框卡住的页面队列。待回答弹框或权限会阻止新的普通页面操作；另一个对话仍可继续。每窗口最多 10 个待处理请求、20 条内存审计摘要，摘要只含 ID、类型、结果；插件不另行落盘回答。DSH 主对话仍按宿主自身日志策略记录问题和用户答复，可能包含文件路径及拟提交的 prompt 文本。网页消息属于不可信待审内容，不能当作用户指令。
+
+### 上传文件与权限边界
+
+HTML `<input type=file>` 的选择框由 CDP 拦截，不显示原生文件选择器。点击或页面调用 `.showPicker()` 后，用 `browser_use_requests` 取得 `upload` 请求，再调用：
+
+```json
+{ "requestId": "请求ID", "paths": ["/absolute/path/report.pdf"] }
+```
+
+以上参数传给 `browser_use_upload`。插件先在主对话展示网页来源和**确切文件路径**询问；获准后才检查文件并调用 CDP `DOM.setFileInputFiles`。支持 1–32 个绝对路径的可读普通文件（仍受页面单选/多选限制），不支持目录上传，页面可能在文件选中后立即开始传输。符号链接按本机真实路径解析，不复制文件；审批与上传间仍可能有外部文件变化，不能将此当作文件内容锁定或 OS 级授权。
+
+上传请求一次派发即消耗，失败/超时可能已有网页效果，不恢复为可重复授权，不自动重试。拒绝只丢弃本次选择请求，不设置文件；不承诺与原生文件选择器完全相同的 cancel 事件。选择成功不等于服务器上传完成，应检查页面业务结果。
+
+通知和剪贴板读写权限请求也可通过主对话逐次审核，默认权限检查为未获准，不持久保存授权。摄像头/麦克风、定位、外部应用等尚无完整后台/系统授权流程，本版明确拒绝并记录 `unsupported`，不能通过 respond 强行允许。需这类能力时应单独设计和验收，不能用网页消息伪造系统许可。
+
+### 打印与 File System Access API
+
+- 网页 `window.print()` 被记录为 `print` 请求，**不弹原生打印框、不发送到打印机**。用 `browser_use_pdf({})` 导出当前页面，文件保存在下载目录下独占的 `pdf-* / page.pdf`，返回路径、字节数及 MIME。它使用网页打印样式，不等于下载网站原始文件。PDF 失败、页面变化或取消会报错，不自动重试或覆盖文件；先处理阻塞弹框再导出。
+- `showOpenFilePicker()`、`showSaveFilePicker()`、`showDirectoryPicker()` 被明确记录为 `unsupported` 并以 `NotAllowedError` 拒绝，避免系统选择器抢前台。即使用户同意，也无法用普通路径等价生成真实 `FileSystemFileHandle` / 目录句柄；本版不伪造返回值、不注入广泛文件系统权限。可用普通 HTML 上传、后台下载或 PDF 工具替代，若站点只接受 FSA 则该工作流尚不支持。
+- 这些拦截是合作页面的后台交互适配，不是对恶意网页的系统弹框沙箱。物理键盘/原生菜单的打印、打印预览/PDF 内嵌查看器、系统证书/HTTP 认证/密码管理器、原生 OS 权限、特殊浏览器窗口或被站点另行取得的原生函数尚未完整接管，不承诺全部系统 UI 都不会出现。
 
 ### 减少重复读取与快速输入
 
@@ -178,7 +243,7 @@ node "/absolute/path/to/profile/node_modules/electron/install.js"
 
 在市场中核对 npm 包名 **`dsh-browser-use-automation`** 及仓库来源 **`laoyingfuhuole/dsh-browser-use-automation`**，不要安装其他作者的同名包。
 
-- 从正确仓库条目安装后，由 dshmarket 的“更新”按钮检查远端版本、选择提交、执行完整安装并管理插件重载。无需额外运行本项目命令行脚本，插件也不自行下载安装、修改 profile 或强制重启。
+- 从正确仓库条目安装后，由 dshmarket 的“更新”按钮检查远端版本、选择提交、执行完整安装并管理插件重载。无需额外运行本项目命令行脚本，插件也不自行下载安装、修改 profile 或强制重启；多组件 bundle 更新可能重建核心并丢失当前页面现场，先结束任务。
 - `file:` / `link:` 开发目录与市场在线来源不同，改源码或本地版本号不能让远端出现更新。想使用市场更新，应在确认停止当前任务后，通过市场切换/恢复到正确 GitHub 条目；恢复不可用时按市场提示移除开发安装并重新安装，不要停留在 `file:` 开发安装。
 - 更新状态以市场结果为准：`applied` 表示已应用，`restart-required` 等状态需按桌面程序提示处理；不要将下载完成或文件版本一致视为进程已经重载。更新卸载可能关闭正在运行的浏览器窗口，应先结束或确认放弃当前页面现场，不能无感更新活跃对话。
 - 清单文件 [integrity.json](integrity.json) 随仓库与发布包分发。插件加载以及启动新 host 前自动检查发布文件的 SHA-256；缺文件、版本不符、旧 host 混装会明确拒绝运行，要求通过市场完整重装并重载。不会自动关闭现有窗口或覆盖市场正在安装的文件。
@@ -224,11 +289,13 @@ npm test -- --test-name-pattern="startup|cancel"
 
 - **客户端**：惰性/共享启动、ready 拆包及认证、路由捕获、响应拆包/粘包、取消/超时/迟到响应、写入失败、断连和旧生命周期清理。
 - **后台下载**：事件同步分配路径、同名隔离、文件名清理、进度/完成文件验证、目录/保存失败、未知来源拒绝、记录限额及关闭/重置的跨对话隔离。另以独立资料目录的 Electron 本地服务验证附件和 Blob 自动落盘；不代表已验收所有网站的文件选择器。
+- **后台网页 UI**：同步弹框值类型、主对话许可允许/拒绝/取消/缺服务、跨对话/导航失效、文件选择取消与一次性派发、PDF 失败/取消不写盘、请求数量和审计限额。独立 Electron 验证主/子框架同步对话框、HTML 上传、通知拒绝、打印转 PDF 及 FSA 明确拒绝；DSH 反问卡片仅做官方接口对照与模拟测试，真实主对话 UI、Windows/Linux 与复杂站点仍待验收。
 - **host**：隔离 Electron 环境下验证对话路由、操作队列、取消、ref 失效、滚轮坐标/限幅、键盘映射和 keyDown/keyUp 清理以及显式 close/reset；模拟测试不证明原生窗口或真实 CDP 的平台行为。
 - **正文读取**：预算/截断、区域和错误输入、代理对边界、隐藏根、对话隔离、导航变化及读取后继续使用原 ref；最小 DOM 夹具不代替真实 Chromium 排版验收。
 - **续读链路**：实际 host 输出与 schema 对齐、从 render 文本取得游标并继续原区域、末页/空页、篡改/跨窗口/重建失效、emoji 小预算保证前进。
 - **快速输入/区域快照**：分块数量和文本一致、焦点变化/取消/错误后的部分进度、不重试；区域根节点、数量和 selector 省略、全局 refs 更新及截断边界。
 - **工具契约**：工具注册、可信对话 ID 和 signal 转发、reset 严格确认、非空断言及 AND 语义、截图字节与路径输出；跨层 schema 检查不等于真实 DSH UI/SDK 验收。
+- **组件启停**：同包 exports、tool 分组唯一归属、共享客户端、首次/运行中能力配置同步、工具/提示卸载、取消待审操作、禁用后 host 拒绝下载/旧调用及核心级联依赖。另在临时 profile 副本使用官方 Cordis 4.1.0 / loader 1.1.0 验证六行加载、单组开关、核心级联和重新注册；真实 Electron 验证运行中切换不换 PID、不丢其他页面。未操作正在运行的真实插件页开关，界面外观/HMR及市场迁移仍待验收。
 - **安装完整性**：在独立临时包中检查运行文件改动/缺失、清单变更、非法清单和版本混装；运行时校验只阻断执行文件，发布校验仍覆盖完整包。
 
 [CI 工作流](.github/workflows/ci.yml) 在 push、pull request 和手动触发时，对 Ubuntu/Windows/macOS × Node 22.19.0/24 运行测试、语法检查、发布清单和安装自检，另检查 npm 打包内容。CI 不执行依赖安装、不下载 Electron、不启动 DSH，也不会自动生成清单来掩盖陈旧清单；修改发布文件后仍需维护者主动运行 `npm run prepare:release`。工作流提交并推送后才会产生远端结果，本地通过不能视为远端矩阵已经通过。
@@ -251,8 +318,12 @@ npm test -- --test-name-pattern="startup|cancel"
 ## 架构
 
 ```text
-index.js                  插件装配与系统提示词
-src/tools.js              对外工具定义与结果格式化
+index.js                  提供共享 browserUse 核心服务和通用提示
+src/{basic,read,files,requests,eval}.js  可独立启停的同包组件入口
+src/core.js / component.js 共享客户端、组件租约、取消和工具/提示卸载
+src/components.json       工具归属及 host 操作权限映射
+src/prompts.js            通用及各组件的提示
+src/tools.js              工具定义、按组选取注册与结果格式化
 src/client.js             惰性启动进程与带认证的回环 RPC
 host/main.cjs             对话窗口映射、共享 Session、独立 CDP 与命令队列
 ```
@@ -288,7 +359,7 @@ host/main.cjs             对话窗口映射、共享 Session、独立 CDP 与�
 - 输入中断的焦点时序修复已覆盖创建/首次加载/显示、人工查看回后台及最小化恢复的模拟回归；隔离 macOS Electron 实测普通 CDP 操作期间未切换前台应用。该结果不等于已复现所有输入法、桌面空间和用户现场的间歇性输入中断。
 - 多显示器下，Mission Control 可能显示空白 tile；窗口保持透明且点击穿透，但尚无原生 z-order（`orderBack`）。
 - Windows 任务栏分组和缩略图由系统设置/策略控制；禁用合并时可能显示多个按钮。若系统将窗口夹回屏内，代码回退到透明状态，预览可能空白，避免直接显示后台页面。任务栏预览或按窗口采集可能暴露页面内容，后台状态不是隐私保护。
-- 没有客户端设置面板，通过 bundle 行启停插件。
+- 没有自定义客户端设置面板，使用 DSH 插件页的六个 bundle 组件行启停；各组依赖核心，上传额外依赖请求处理。
 
 ## 许可证
 

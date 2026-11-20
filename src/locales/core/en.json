@@ -1,0 +1,1 @@
+{"meta":{"title":"Background browser core","description":"Owns the shared Electron host, conversation windows and background UI interception. Required by every browser tool component."}}
