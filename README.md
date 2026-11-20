@@ -4,10 +4,11 @@
 
 ## 当前版本
 
-`v0.5.0`（当前版本）。`browser_use_*` 工具名、`BROWSER_USE_*` 环境变量与错误码保持稳定。
+`v0.6.0`（当前版本）。`browser_use_*` 工具名、`BROWSER_USE_*` 环境变量与错误码保持稳定。
 
 ## 功能迭代
 
+- `v0.6.0`：拆成六个可独立开关的组件（核心进程 + 基础网页操作 / 正文读取 / 文件与 PDF / 网页请求处理 / 高级 JavaScript），共享同一 host，工具名与默认行为不变；新增 `browser_use_requests`、`browser_use_respond`、`browser_use_upload`、`browser_use_pdf`；接管网页原生对话框（confirm/prompt、文件选择、保存）走 IPC，不弹系统框。
 - `v0.5.0`：新增 `browser_use_downloads`——host 在共享 Session 上接管 `will-download`，在事件内同步指定保存路径，后台落盘且不弹系统保存框；每次下载独占 `download-*` 目录，按对话隔离记录进度与状态，close/reset 取消本对话活动下载但保留历史与文件。
 - `v0.4.2`：`browser_use_snapshot` 支持按 `selector` 限定区域、`maxElements` 限制数量（1–150）与 `includeSelectors` 精简输出，并在结果中标明范围与截断；`browser_use_type` 新增 `mode: human|fast`，fast 每块最多 256 个 Unicode 码点、逐块复核节点与焦点；`browser_use_read` 返回 `offset`/`nextCursor` 续读进度，游标过期与预算不足明确报错。
 - `v0.4.1`：`browser_use_read` 支持页面版本绑定的 `nextCursor` 续读；超长 eval 返回添加安全上限及截断提示；运行时完整性校验仅阻断执行文件，发布校验继续覆盖完整包；统一 `type` / `insertText` 输入计数为 Unicode 码点。
@@ -16,7 +17,7 @@
 - `v0.3.0`：从一个离屏窗口改为**每个对话一个独立窗口**，按对话 ID 路由，工具不能跨对话选窗口；新增 `browser_use_insert_text`、`browser_use_reset`，`browser_use_close` 只关闭当前对话窗口；所有窗口共享 `session.defaultSession`（Cookie、localStorage、IndexedDB），页面与 sessionStorage 独立；新增发布文件完整性校验（`integrity.json` + SHA-256）。
 - `v0.2.0`：重建基础版本——单窗口离屏后台运行、CDP 驱动、编号快照 ref、截图、`eval`、等待与断言、Dock 菜单，不抢焦点。
 
-macOS 真实 Electron 回归已覆盖主要路径；Windows 新修复已通过平台模拟测试，仍需用匹配版本、无 shim 的 Electron 在 Windows 实机复验。真实 DSH UI 双对话验收仍待完成。对外使用 `vX.Y.Z` 标签，package.json 使用标准数字版本 `0.5.0`。
+macOS 真实 Electron 回归已覆盖主要路径；Windows 新修复已通过平台模拟测试，仍需用匹配版本、无 shim 的 Electron 在 Windows 实机复验。真实 DSH UI 双对话验收仍待完成。对外使用 `vX.Y.Z` 标签，package.json 使用标准数字版本 `0.6.0`。
 
 ## 功能
 
@@ -27,7 +28,7 @@ macOS 真实 Electron 回归已覆盖主要路径；Windows 新修复已通过�
 - `browser_use_snapshot` 返回编号元素 ref；ref 只在当次快照内有效。
 - DSH 界面在后台时仍可工作；不移除 display surface，因此 CDP 输入不会被丢弃。
 
-## 组件开关（开发中，尚未发布）
+## 组件开关
 
 同一个安装包通过 `cordis.patch.yml` 提供六个独立组件行，可以在 DSH 插件页分别开关；所有工具组件共享一个 `browserUse` 核心服务和一个惰性启动的 Electron host，不会每组启动一个浏览器。默认六组都启用，工具名及默认操作行为保持不变。
 
