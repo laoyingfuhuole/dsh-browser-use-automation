@@ -4,10 +4,11 @@
 
 ## 当前版本
 
-`v0.7.0`。`browser_use_*` 工具名和既有配置不变；升级后下载默认受配额限制，登录状态仍默认共享。
+`v0.7.1`。`browser_use_*` 工具名和既有配置不变；升级后下载默认受配额限制，登录状态仍默认共享。
 
 ## 功能迭代
 
+- `v0.7.1`：修复 CI 在两个既有环境上的失败——Node 测试矩阵改用 22.23.5（22.19.0/22.20.0 在 `node --test` 配合 `--experimental-vm-modules` 退出阶段会偶发 SIGSEGV），打包冒烟作业在安装 Electron 后显式执行 `install.js`（Electron 44 起不再有 postinstall，二进制需单独下载）并校验 `path.txt`。功能与工具契约不变。
 - `v0.7.0`：快照不再把输入框或文本域的当前值用作标签；后台下载增加可配置的单文件、并发和目录配额；控制连接通过认证后才占用唯一控制通道。新增按对话隔离的内存会话。CI 对实际 npm 包运行 Electron 冒烟测试，并为官方版本标签的已测试包生成构建来源证明。
 - `v0.6.0`：拆成六个可独立开关的组件（核心进程 + 基础网页操作 / 正文读取 / 文件与 PDF / 网页请求处理 / 高级 JavaScript），共享同一 host，工具名与默认行为不变；新增 `browser_use_requests`、`browser_use_respond`、`browser_use_upload`、`browser_use_pdf`；接管网页原生对话框（confirm/prompt、文件选择、保存）走 IPC，不弹系统框。
 - `v0.5.0`：新增 `browser_use_downloads`——host 在共享 Session 上接管 `will-download`，在事件内同步指定保存路径，后台落盘且不弹系统保存框；每次下载独占 `download-*` 目录，按对话隔离记录进度与状态，close/reset 取消本对话活动下载但保留历史与文件。
@@ -292,7 +293,7 @@ npm run check:install -- /absolute/path/to/profile/node_modules/dsh-browser-use-
 
 ## 测试与 CI（源码仓库）
 
-测试使用 Node 内建 `node:test`、断言和 VM 隔离夹具，无需安装 Electron 或 DSH SDK，也不启动浏览器、连接真实账号或读取本机 profile。请使用 Node >= 22.19；测试启动器自动发现 `test/` 下的 `*.test.mjs`，不依赖 shell 通配符，因此 Windows、macOS、Linux 使用相同命令：
+测试使用 Node 内建 `node:test`、断言和 VM 隔离夹具，无需安装 Electron 或 DSH SDK，也不启动浏览器、连接真实账号或读取本机 profile。运行测试请使用 Node >= 22.23.5：22.19.0 与 22.20.0 在 `node --test` 配合 `--experimental-vm-modules` 的进程退出阶段会偶发 SIGSEGV（上游缺陷，插件运行本身仍支持 Node >= 22.19）。测试启动器自动发现 `test/` 下的 `*.test.mjs`，不依赖 shell 通配符，因此 Windows、macOS、Linux 使用相同命令：
 
 ```bash
 npm test
@@ -314,7 +315,7 @@ npm test -- --test-name-pattern="startup|cancel"
 - **组件启停**：同包 exports、tool 分组唯一归属、共享客户端、首次/运行中能力配置同步、工具/提示卸载、取消待审操作、禁用后 host 拒绝下载/旧调用及核心级联依赖。另在临时 profile 副本使用官方 Cordis 4.1.0 / loader 1.1.0 验证六行加载、单组开关、核心级联和重新注册；真实 Electron 验证运行中切换不换 PID、不丢其他页面。未操作正在运行的真实插件页开关，界面外观/HMR及市场迁移仍待验收。
 - **安装完整性**：在独立临时包中检查运行文件改动/缺失、清单变更、非法清单和版本混装；运行时校验只阻断执行文件，发布校验仍覆盖完整包。
 
-[CI 工作流](.github/workflows/ci.yml) 在 push、pull request 和手动触发时，对 Ubuntu/Windows/macOS × Node 22.19.0/24 运行隔离回归、语法检查、发布清单和安装自检，另检查 npm 打包内容。独立 macOS 作业为打包产物安装 Electron，在临时资料目录和本地测试页上验证导航、快照脱敏、共享/隔离登录状态、弹框和下载。不启动 DSH，也不验证 DSH 反问卡片。CI 不自动生成清单；修改发布文件后要主动运行 `npm run prepare:release`。
+[CI 工作流](.github/workflows/ci.yml) 在 push、pull request 和手动触发时，对 Ubuntu/Windows/macOS × Node 22.23.5/24 运行隔离回归、语法检查、发布清单和安装自检，另检查 npm 打包内容。独立 macOS 作业为打包产物安装 Electron（Electron 44 起没有 postinstall，需显式运行 `node node_modules/electron/install.js` 下载二进制），在临时资料目录和本地测试页上验证导航、快照脱敏、共享/隔离登录状态、弹框和下载。不启动 DSH，也不验证 DSH 反问卡片。CI 不自动生成清单；修改发布文件后要主动运行 `npm run prepare:release`。
 
 这些开发测试、启动器和工作流不进入插件发布文件列表；`npm test` 和 `npm run check:syntax` 仅在源码 checkout 中可用，市场安装用户无需运行。尚需另行进行真实 DSH 双对话、Electron 导航/输入、Windows 任务栏/多屏及 Linux 实机验收。模拟环境中的跨平台绿灯不等同实机兼容性认证。
 
