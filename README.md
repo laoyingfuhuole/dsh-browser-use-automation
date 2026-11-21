@@ -1,13 +1,14 @@
 # dsh-browser-use-automation
 
-面向 [DeepSeek Harness](https://github.com/deepseek-ai) 的后台浏览器自动化插件。一个 Electron host 为不同对话分配独立编号的离屏窗口，使用 CDP 输入和快照 ref，不抢焦点；各窗口共享登录状态与持久化站点数据。
+面向 [DeepSeek Harness](https://github.com/deepseek-ai) 的后台浏览器自动化插件。一个 Electron host 为不同对话分配独立编号的离屏窗口，使用 CDP 输入和快照 ref，不抢焦点；默认共享登录状态，也可选择按对话隔离的内存会话。
 
 ## 当前版本
 
-`v0.6.0`（当前版本）。`browser_use_*` 工具名、`BROWSER_USE_*` 环境变量与错误码保持稳定。
+`v0.7.0`。`browser_use_*` 工具名和既有配置不变；升级后下载默认受配额限制，登录状态仍默认共享。
 
 ## 功能迭代
 
+- `v0.7.0`：快照不再把输入框或文本域的当前值用作标签；后台下载增加可配置的单文件、并发和目录配额；控制连接通过认证后才占用唯一控制通道。新增按对话隔离的内存会话。CI 对实际 npm 包运行 Electron 冒烟测试，并为官方版本标签的已测试包生成构建来源证明。
 - `v0.6.0`：拆成六个可独立开关的组件（核心进程 + 基础网页操作 / 正文读取 / 文件与 PDF / 网页请求处理 / 高级 JavaScript），共享同一 host，工具名与默认行为不变；新增 `browser_use_requests`、`browser_use_respond`、`browser_use_upload`、`browser_use_pdf`；接管网页原生对话框（confirm/prompt、文件选择、保存）走 IPC，不弹系统框。
 - `v0.5.0`：新增 `browser_use_downloads`——host 在共享 Session 上接管 `will-download`，在事件内同步指定保存路径，后台落盘且不弹系统保存框；每次下载独占 `download-*` 目录，按对话隔离记录进度与状态，close/reset 取消本对话活动下载但保留历史与文件。
 - `v0.4.2`：`browser_use_snapshot` 支持按 `selector` 限定区域、`maxElements` 限制数量（1–150）与 `includeSelectors` 精简输出，并在结果中标明范围与截断；`browser_use_type` 新增 `mode: human|fast`，fast 每块最多 256 个 Unicode 码点、逐块复核节点与焦点；`browser_use_read` 返回 `offset`/`nextCursor` 续读进度，游标过期与预算不足明确报错。
@@ -17,7 +18,7 @@
 - `v0.3.0`：从一个离屏窗口改为**每个对话一个独立窗口**，按对话 ID 路由，工具不能跨对话选窗口；新增 `browser_use_insert_text`、`browser_use_reset`，`browser_use_close` 只关闭当前对话窗口；所有窗口共享 `session.defaultSession`（Cookie、localStorage、IndexedDB），页面与 sessionStorage 独立；新增发布文件完整性校验（`integrity.json` + SHA-256）。
 - `v0.2.0`：重建基础版本——单窗口离屏后台运行、CDP 驱动、编号快照 ref、截图、`eval`、等待与断言、Dock 菜单，不抢焦点。
 
-macOS 真实 Electron 回归已覆盖主要路径；Windows 新修复已通过平台模拟测试，仍需用匹配版本、无 shim 的 Electron 在 Windows 实机复验。真实 DSH UI 双对话验收仍待完成。对外使用 `vX.Y.Z` 标签，package.json 使用标准数字版本 `0.6.0`。
+macOS 真实 Electron 回归已覆盖主要路径；Windows 新修复已通过平台模拟测试，仍需用匹配版本、无 shim 的 Electron 在 Windows 实机复验。真实 DSH UI 双对话验收仍待完成。对外使用 `vX.Y.Z` 标签，`package.json` 使用不带 `v` 的数字版本。
 
 ## 功能
 
@@ -25,7 +26,7 @@ macOS 真实 Electron 回归已覆盖主要路径；Windows 新修复已通过�
 - 窗口默认离屏停放；普通页面工具不主动激活窗口。Windows 保留任务栏预览，macOS 使用 Dock 编号菜单。
 - 通过 Chrome DevTools Protocol 驱动页面：真实鼠标/滚轮事件、有限键盘事件、`Input.insertText`、`Input.dispatchKeyEvent`、`Page.captureScreenshot`、`Runtime.evaluate`。
 - 在页面内绘制光标（箭头 + 动作气泡、点击涟漪）；输入可选逐字符或受控快速分块，动作不依赖系统指针。
-- `browser_use_snapshot` 返回编号元素 ref；ref 只在当次快照内有效。
+- `browser_use_snapshot` 返回编号元素 ref；ref 只在当次快照内有效。快照不会把输入框或文本域的当前值用作标签；网页自己展示的文字、标签、截图及显式脚本读取不在此脱敏范围内。
 - DSH 界面在后台时仍可工作；不移除 display surface，因此 CDP 输入不会被丢弃。
 
 ## 组件开关
@@ -92,13 +93,14 @@ macOS 真实 Electron 回归已覆盖主要路径；Windows 新修复已通过�
 
 ### 后台下载（不弹系统保存框）
 
-host 在创建页面前对共享 Session 注册一次 `will-download`，在事件内同步指定保存路径，避免 Electron 默认弹出 macOS/Windows 的“另存为”对话框。此规则覆盖浏览器正常触发的附件、`download` 链接和 Blob 下载，不会自动打开保存后的文件。
+host 在创建页面前为所用的 Session 注册 `will-download`，在事件内同步指定保存路径，避免 Electron 默认弹出 macOS/Windows 的“另存为”对话框。此规则覆盖浏览器正常触发的附件、`download` 链接和 Blob 下载，不会自动打开保存后的文件。
 
 - 默认保存到 `$DSH_HOME/browser-use/downloads`（未设 DSH_HOME 时为 `~/.dsh/browser-use/downloads`）。可在启动 host 前用 `BROWSER_USE_DOWNLOAD_DIR` 指定绝对目录；非法路径明确报错，不自动改为其他目录。目录在首次下载时创建。
 - 每次下载分配独占的 `download-*` 子目录，文件名经清理及长度限制；同名/并发下载不会覆盖其他文件。不把对话 ID 写进文件名，不让模型任意选择覆盖路径。
 - `browser_use_downloads` 只返回当前对话记录，包含 `id`、`filename`、`state`、已收/总字节数及可选 `path`、`error`。查询不创建窗口，不受该页面队列卡住影响。只有 `completed` 且确认文件存在才表示可使用；`progressing` 或 `interrupted` 不表示成功，`cancelled` / `failed` 要检查原因。总字节数未知时可能为 0 或负值，不据此判断完成。
-- 历史保存在本次 host 内存中，每对话保留最多 50 条记录，优先淘汰已结束项；活动项不淘汰，活动数量超过 50 时可暂时超限。close/reset 保留历史和已有文件，但取消所属窗口仍在下载的文件，不影响其他对话。host 重启后历史不恢复，文件仍留在保存目录。
-- 工具取消/超时不回滚已经发起的下载，也不自动取消它；查询状态后再决定下一步，禁止自动重复点击下载按钮。close/reset 或插件卸载会取消活动下载，取消/失败可能留下部分文件，本插件不会自动删除用户已保存或未完成文件。
+- 默认单文件最多 256 MiB、单 host 同时最多 4 个下载、整个保存目录预算 2 GiB（含 PDF、已有及残留文件）。启动前可用 `BROWSER_USE_DOWNLOAD_MAX_FILE_BYTES`、`BROWSER_USE_DOWNLOAD_MAX_CONCURRENT`、`BROWSER_USE_DOWNLOAD_MAX_DIRECTORY_BYTES` 设置正整数。未知大小会预留剩余预算与单文件上限的较小者；Electron 报告超限时取消并清理该次生成的文件。应用层配额不是文件系统硬配额，可能短时超出；不要让多个 host 同时写同一目录。
+- 历史保存在本次 host 内存中，每对话保留 50 条，优先淘汰已结束项。close/reset 保留历史和已有文件，但取消所属窗口仍在下载的文件，不影响其他对话。host 重启后历史不恢复，已有文件仍占用配额。
+- 工具取消/超时不回滚已发起的下载；查询状态后再决定下一步，不要自动重试。普通取消/失败可能残留部分文件，插件不会自动删除之前的下载。
 - 路径准备失败时阻止该次下载并记录错误，不能回退到原生保存框；来源不属于存活对话窗口的下载直接拒绝并记录日志，不分配到其他对话。
 
 推荐流程：点击下载 → `browser_use_downloads` → 必要时再次查询，直到 `completed` 后使用返回路径。直接导航到附件 URL 仍可能报告“导航转为下载”，这是页面没有加载成功，不代表文件失败；应查询下载状态，不能自动重试导航或点击。打印与 File System Access API 不属于此下载事件路径，分别按下节的 PDF 导出和显式不支持策略处理。
@@ -186,7 +188,8 @@ fast 遇到目标被移除、焦点变化、取消或 CDP 失败时停止后续�
 - 工具从 DSH 执行上下文的 `exec.agent.id` 获取对话标识；同一对话复用窗口，不同对话使用不同窗口。模型无需、也不能通过参数选择窗口。缺失标识时明确报错。
 - 编号只用于标题和 Dock 菜单，在本次 host 生命周期中递增；内部始终按对话 ID 路由，不能将编号或快照 ref 当作跨对话标识。
 - 每个窗口独立持有页面、快照 ref、CDP 会话和操作队列。同窗口顺序执行，不同窗口可并行。
-- 所有窗口使用同一个 `session.defaultSession`，保留之前的默认数据目录。同源 Cookie、localStorage、IndexedDB 等共享；页面、后退/前进历史和 sessionStorage 各自独立。退出登录或切换账号会影响其他窗口。
+- 默认使用 `BROWSER_USE_SESSION_MODE=shared`，保留之前的默认数据目录。同源 Cookie、localStorage、IndexedDB 等共享，退出登录或切换账号会影响其他窗口。
+- 启动 host 前设置 `BROWSER_USE_SESSION_MODE=isolated`，每个对话窗口使用独立、非持久化的会话；close/reset 后的新窗口不继承旧登录。不会迁移或删除共享资料，下载等落盘产物也不会被清除。这不是 OS 或网络隔离。
 - 共享的是插件的浏览器数据，不是系统 Chrome 的账户、书签或资料。不要启动多个 host 进程同时写同一个数据目录。
 - 默认跨轮次保留窗口、页面和未提交内容，不因一轮回复结束或空闲而回收。仅用户明确要求关闭/恢复时调用 `browser_use_close` 或 `browser_use_reset`；插件卸载、断连或应用退出才结束共享 host。
 
@@ -264,6 +267,18 @@ npm pack --dry-run
 
 将更新后的 `integrity.json` 和源码一起提交；这些命令不会提交、打标签或发布。GitHub 来源更新要求远端已有新代码及更高的 package 版本，不能只修改标签或本机版本。正式打包前同样先运行 `check:release`。
 
+官方仓库推送与 `package.json` 匹配的 `vX.Y.Z` 标签时，CI 为通过测试的 npm tarball 生成 GitHub 构建来源证明。发布时应使用该次运行的 `tested-npm-tarball`，不要另行重打包。下载后可在安装前核验来源（下例将版本替换为实际标签）：
+
+```bash
+repo=laoyingfuhuole/dsh-browser-use-automation
+version=X.Y.Z
+gh attestation verify "dsh-browser-use-automation-$version.tgz" \
+  --repo "$repo" --signer-workflow "$repo/.github/workflows/ci.yml" \
+  --source-ref "refs/tags/v$version" --deny-self-hosted-runners
+```
+
+来源证明绑定的是 tarball 字节和构建身份，不证明代码没有缺陷，也不覆盖 GitHub 自动生成的源码 ZIP、dshmarket 的源码安装或独立下载的 Electron 二进制。插件仍只做本地文件一致性检查，不在启动时联网验签。
+
 普通市场用户不需要下面的诊断命令。维护者可在安装目录执行自检，或从 checkout 比较整个安装副本：
 
 ```bash
@@ -299,7 +314,7 @@ npm test -- --test-name-pattern="startup|cancel"
 - **组件启停**：同包 exports、tool 分组唯一归属、共享客户端、首次/运行中能力配置同步、工具/提示卸载、取消待审操作、禁用后 host 拒绝下载/旧调用及核心级联依赖。另在临时 profile 副本使用官方 Cordis 4.1.0 / loader 1.1.0 验证六行加载、单组开关、核心级联和重新注册；真实 Electron 验证运行中切换不换 PID、不丢其他页面。未操作正在运行的真实插件页开关，界面外观/HMR及市场迁移仍待验收。
 - **安装完整性**：在独立临时包中检查运行文件改动/缺失、清单变更、非法清单和版本混装；运行时校验只阻断执行文件，发布校验仍覆盖完整包。
 
-[CI 工作流](.github/workflows/ci.yml) 在 push、pull request 和手动触发时，对 Ubuntu/Windows/macOS × Node 22.19.0/24 运行测试、语法检查、发布清单和安装自检，另检查 npm 打包内容。CI 不执行依赖安装、不下载 Electron、不启动 DSH，也不会自动生成清单来掩盖陈旧清单；修改发布文件后仍需维护者主动运行 `npm run prepare:release`。工作流提交并推送后才会产生远端结果，本地通过不能视为远端矩阵已经通过。
+[CI 工作流](.github/workflows/ci.yml) 在 push、pull request 和手动触发时，对 Ubuntu/Windows/macOS × Node 22.19.0/24 运行隔离回归、语法检查、发布清单和安装自检，另检查 npm 打包内容。独立 macOS 作业为打包产物安装 Electron，在临时资料目录和本地测试页上验证导航、快照脱敏、共享/隔离登录状态、弹框和下载。不启动 DSH，也不验证 DSH 反问卡片。CI 不自动生成清单；修改发布文件后要主动运行 `npm run prepare:release`。
 
 这些开发测试、启动器和工作流不进入插件发布文件列表；`npm test` 和 `npm run check:syntax` 仅在源码 checkout 中可用，市场安装用户无需运行。尚需另行进行真实 DSH 双对话、Electron 导航/输入、Windows 任务栏/多屏及 Linux 实机验收。模拟环境中的跨平台绿灯不等同实机兼容性认证。
 
@@ -329,7 +344,7 @@ src/client.js             惰性启动进程与带认证的回环 RPC
 host/main.cjs             对话窗口映射、共享 Session、独立 CDP 与命令队列
 ```
 
-子进程在 stdout 打印一行 ready（`{ "port": ... }`）。父进程连接 `127.0.0.1`，先发送 `{ op: "hello", token }`（每次 spawn 随机生成 token），然后才发命令。并发的首次调用共用一次启动，且都等待认证完成。命令按对话分别排队，不同窗口互不等待；第二个控制连接会被拒绝。超时、断连、取消和卸载共用清理逻辑。取消与客户端超时会把原请求 ID 和对话 ID 通知 host。未执行的请求跳过，运行请求在安全边界停止后续步骤；已发出的 CDP 调用仍占用本窗口队列直到真正结束，不与下一请求交错。已经发生的点击、输入和服务端副作用无法撤销。
+子进程在 stdout 打印一行 ready（`{ "port": ... }`）。父进程连接 `127.0.0.1`，先发送 `{ id: 0, op: "hello", token }`（每次 spawn 随机生成 token），然后才发命令。握手有独立的时间、字节和连接数上限；只有通过认证的连接才占用唯一控制槽，未认证连接断开不会关闭宿主。并发的首次调用共用一次启动，且都等待认证完成。命令按对话分别排队，不同窗口互不等待。超时、断连、取消和卸载共用清理逻辑。取消与客户端超时会把原请求 ID 和对话 ID 通知 host。未执行的请求跳过，运行请求在安全边界停止后续步骤；已发出的 CDP 调用仍占用本窗口队列直到真正结束，不与下一请求交错。已经发生的点击、输入和服务端副作用无法撤销。
 
 ### 取消、恢复与页面校验
 

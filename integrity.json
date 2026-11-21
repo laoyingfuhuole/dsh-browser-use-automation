@@ -1,16 +1,17 @@
 {
   "schema": 1,
   "name": "dsh-browser-use-automation",
-  "version": "0.6.0",
+  "version": "0.7.0",
   "files": {
     "LICENSE": "808e79b6162ecf82dc98f5823f2fdac5a876ce099ebe388e96a145bc33864e9c",
-    "README.md": "886701e974bcc341269ed298909fc9e58161423f468eb1576c3e19f9d2c3934d",
+    "README.md": "c988d54327b4f7b29acfc0e4b0b4a24f2ad09535690403afa7ac9a1319bff762",
     "cordis.patch.yml": "5b61588ba9dd4485cb90d65285b75c8bbe74f844d52a0ba91d72f297553160c0",
-    "host/main.cjs": "81a994c1d6ecf9f297327a60c9f419c009086247986c1b753ab12209aa9a7c1b",
+    "host/download-quota.cjs": "438d80b8f2257b3c7ee4b593b53ad06b79c96e4833db640088cd4efd232d9504",
+    "host/main.cjs": "3a0078d8a8e2840e5df3c38aae9885a4e3f346abc84723970eeedf293b21d34d",
     "host/native-preload.cjs": "9411171539e360d110fa022991b4f27bbb4a7741c75dba9df4f0996ec7a059dc",
-    "host/native-ui.cjs": "a609c2f29ca104c548bacf806a8ab7bb2f5c70cd36f8fcda59b6b727a8f71fb0",
+    "host/native-ui.cjs": "302b3cef1a2dce44f3eb5fc7cbccdee02d004a831a86fe3bcc8a9a75495aa03f",
     "index.js": "cc5f2d7d783086d4cc967322d991833f1d981afffb0acf663abe72c1521c2d59",
-    "package.json": "037247d825f6cafa47320914210f22e366e596cabc61695f9579119783263a42",
+    "package.json": "024d89cbbc188c4e74a91a3ab8dd1f84e9d6987f6442cb54bd7005036849ab64",
     "scripts/check-install.mjs": "15b84fb0d02d0d6b5715cefe37229f7398cfb70b4f3ccef83eace02188ef3c62",
     "scripts/check-runtime.mjs": "db1210fb8301ce9e7b8c7d3e0292b80069a122f8fefdd0fbfb906c28c5787670",
     "scripts/prepare-release.mjs": "77a73558279b1e81e4f8dd64b4a7c04955f252ff2e0080bdc51b8522514b1508",
@@ -21,7 +22,7 @@
     "src/core.js": "0cbdd0102d44f91a9b6c6f0b725cbead2a802b7933b209f41ee4d7137555d982",
     "src/eval.js": "4285359be9ff692ff71d86a4a0491ac0b100c4a1b2d2a7c84571edc39358487e",
     "src/files.js": "c6fdd14545e19b3675def073893cddda71ca7f9217a17c37e6f46126e7bd24ff",
-    "src/integrity.js": "c2e73d0f0ba335dbaff1ac94d4c3abb58cc0ff926285e708882172cd32c568e8",
+    "src/integrity.js": "16f4b909da98976dfb54974719f1155fa64ad9ddfc8b469a13098aa679a3d580",
     "src/locales/basic/en.json": "3cb194feb6f36bb57e8dab46b2118906dfbdcd70fee06d93c8a367dff7c3bdc1",
     "src/locales/basic/zh.json": "fc5540b060ae71ad7ad1bd4a46788c7cda9da61a6d55e7f3559a7436ef3fae84",
     "src/locales/core/en.json": "f578ba68759af245c5eb733d06e701ec8329b0c9c9025c13bf0450b452952e3c",
@@ -34,9 +35,9 @@
     "src/locales/read/zh.json": "d10ee8c444eaa0a8da3bcd4d7c234eac3d6bdc74b2d5f36a37366375ee6f0faa",
     "src/locales/requests/en.json": "046b2253a69d9a30e25111785fba21c66e5f7a7c423a08893c8c58e92cb8d668",
     "src/locales/requests/zh.json": "777a647daa05402e151e34814028940d9916c4257236b5669dad2763ce7b7e99",
-    "src/prompts.js": "0f16e40d6ebb9d35bf95a2ee6a6c1b904f9f1685a969a41f7eacfec42d320693",
+    "src/prompts.js": "9d240ef43cf81ddc439e5377bfe904f8f009567c6ee0c206ff111cfab778a3f3",
     "src/read.js": "07891cec1d91cbde2d2c0c99e93aa4a057c3e9ebdd24e43be94e02570765c242",
     "src/requests.js": "f1ca7bb0e00d59baa424028ae41d8e8728a3dfec64bb9dd6dd6548a28c26c641",
-    "src/tools.js": "eff08229f06d1289b9df0e1f3e3acc1575d6bedb12cac63918db1def8922e6b1"
+    "src/tools.js": "fa2ef478cd0ee7c3572378531e31e09a29dbf99d226d2ec6cd972d33a9d390b0"
   }
 }

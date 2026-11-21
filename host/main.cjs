@@ -14,10 +14,11 @@
 
 const { app, BrowserWindow, Menu, screen, session, ipcMain } = require('electron')
 const { createServer } = require('node:net')
-const { randomBytes, createHmac } = require('node:crypto')
-const { mkdirSync, mkdtempSync, statSync } = require('node:fs')
-const { isAbsolute, join, basename, win32 } = require('node:path')
-const { installNativeUI, createNativeUI } = require('./native-ui.cjs')
+const { randomBytes, createHmac, timingSafeEqual } = require('node:crypto')
+const { mkdirSync, mkdtempSync, statSync, rmSync } = require('node:fs')
+const { isAbsolute, join, basename, resolve, win32 } = require('node:path')
+const { installNativeIPC, installNativeSession, createNativeUI } = require('./native-ui.cjs')
+const { downloadLimits, remainingDiskBudget } = require('./download-quota.cjs')
 const componentDefinitions = require('../src/components.json')
 let enabledComponents = new Set(process.env.BROWSER_USE_COMPONENTS === undefined
   ? Object.keys(componentDefinitions) : JSON.parse(process.env.BROWSER_USE_COMPONENTS))
@@ -56,7 +57,10 @@ if (userDataDir !== undefined) {
 }
 
 // 父进程通过环境变量配置本次宿主；KEEP_DOCK 显式覆盖 HIDE_DOCK。
-const TOKEN = process.env.BROWSER_USE_TOKEN || ''
+const TOKEN = Buffer.from(process.env.BROWSER_USE_TOKEN || '')
+if (TOKEN.length === 0) throw new Error('BROWSER_USE_TOKEN is required')
+const SESSION_MODE = process.env.BROWSER_USE_SESSION_MODE ?? 'shared'
+if (!['shared', 'isolated'].includes(SESSION_MODE)) throw new Error('BROWSER_USE_SESSION_MODE must be shared or isolated')
 const WIDTH = Number(process.env.BROWSER_USE_WIDTH || 1400) || 1400
 const HEIGHT = Number(process.env.BROWSER_USE_HEIGHT || 900) || 900
 const FORCE_DOCK = process.env.BROWSER_USE_KEEP_DOCK === '1'
@@ -69,8 +73,11 @@ if (WINDOWS_TASKBAR) app.setAppUserModelId('laoyingfuhuole.dsh-browser-use-autom
 // 宿主只保留一个控制连接；窗口、refs、CDP、就绪状态与队列均按对话隔离。
 let server = null
 let socket = null
-let input = '' // TCP 可能拆包/粘包，先累积文本再按换行拆消息
-let authenticated = false
+const handshakes = new Set()
+const HANDSHAKE_TIMEOUT_MS = 2_000
+const HANDSHAKE_BUFFER_LIMIT = 1024
+const HANDSHAKE_CONNECTION_LIMIT = 16
+const RPC_BUFFER_LIMIT = 8 * 1024 * 1024
 let quitting = false
 let sessionUsed = false
 let nextWindowNumber = 0
@@ -87,7 +94,12 @@ const downloadOwners = new Map()
 const activeDownloads = new Map()
 const nativeControllers = new Map()
 const DOWNLOAD_HISTORY_LIMIT = 50
+const quotas = downloadLimits(process.env)
 let downloadDirectory
+
+function downloadSpace() {
+  return remainingDiskBudget(downloadDirectory, quotas.directoryBytes, activeDownloads.values())
+}
 
 function trimDownloads(history) {
   while (history.length > DOWNLOAD_HISTORY_LIMIT) {
@@ -110,6 +122,8 @@ function handleDownload(event, item, contents) {
     receivedBytes: 0, totalBytes: 0,
   }
   history.push(entry)
+  let directory
+  let budget
   try {
     // 每次分配独占目录，既保留原文件名，又避免跨对话/同名并发下载覆盖已有文件。
     const suggested = basename(win32.basename(item.getFilename()))
@@ -117,23 +131,39 @@ function handleDownload(event, item, contents) {
     while (Buffer.byteLength(characters.join(''), 'utf8') > 180) characters.pop()
     entry.filename = characters.join('') || 'download'
     if (/^(con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\.|$)/i.test(entry.filename)) entry.filename = '_' + entry.filename
+    if (activeDownloads.size >= quotas.concurrent) throw new Error('concurrent download limit reached')
     entry.totalBytes = item.getTotalBytes()
+    const space = downloadSpace()
+    const max = Math.min(quotas.fileBytes, space)
+    if (entry.totalBytes > quotas.fileBytes) throw new Error('download exceeds single-file limit')
+    if (max <= 0 || entry.totalBytes > max) throw new Error('download directory budget exhausted')
+    budget = entry.totalBytes > 0 ? entry.totalBytes : max
     mkdirSync(downloadDirectory, { recursive: true })
-    const directory = mkdtempSync(join(downloadDirectory, 'download-'))
+    directory = mkdtempSync(join(downloadDirectory, 'download-'))
     entry.path = join(directory, entry.filename)
     item.setSavePath(entry.path)
   } catch (error) {
     event.preventDefault()
+    if (directory) {
+      try { rmSync(directory, { recursive: true, force: true }) } catch {}
+      delete entry.path
+    }
     entry.state = 'failed'
     entry.error = `could not prepare download: ${error.message}`
     console.error(`[dsh-browser-use-automation] ${entry.error}`)
     trimDownloads(history)
     return
   }
+  const exceedsBudget = () => entry.receivedBytes > budget || entry.totalBytes > budget
+  let overQuota = false
   const update = (_event, state) => {
     entry.state = state
     entry.receivedBytes = item.getReceivedBytes()
     entry.totalBytes = item.getTotalBytes()
+    if (!overQuota && exceedsBudget()) {
+      overQuota = true
+      item.cancel()
+    }
   }
   const done = (_event, state) => {
     item.off('updated', update)
@@ -150,11 +180,18 @@ function handleDownload(event, item, contents) {
         entry.state = 'failed'
         entry.error = `download completed but saved file is unavailable: ${error.message}`
       }
-    } else if (!entry.error) entry.error = `download ${state}`
+    }
+    if (overQuota || exceedsBudget()) {
+      entry.state = 'failed'
+      entry.error = 'download exceeded its reserved byte budget'
+      try { rmSync(directory, { recursive: true, force: true }); delete entry.path } catch (error) {
+        entry.error += `; could not remove over-quota output: ${error.message}`
+      }
+    } else if (entry.state !== 'completed' && !entry.error) entry.error = `download ${state}`
     if (entry.state !== 'completed') console.error(`[dsh-browser-use-automation] ${entry.error}`)
     trimDownloads(history)
   }
-  activeDownloads.set(entry.id, { item, owner, entry })
+  activeDownloads.set(entry.id, { item, owner, entry, directory, budget })
   item.on('updated', update)
   item.once('done', done)
   trimDownloads(history)
@@ -213,6 +250,7 @@ function updateDockMenu() {
 function quitHost() {
   if (quitting) return
   quitting = true
+  for (const connection of handshakes) connection.destroy()
   for (const record of windows.values()) record.dispose(new Error('host shutting down'))
   if (!sessionUsed) {
     app.quit()
@@ -239,6 +277,7 @@ function createConversation(conversationId) {
   const windowNumber = ++nextWindowNumber
   const title = `dsh-browser-use-automation #${windowNumber}`
   let win = null
+  let retireSession
   let refs = new Map()
   let documentVersion = 0
   let nativeUI = null
@@ -385,6 +424,7 @@ function createConversation(conversationId) {
     // 旧窗口的延迟事件不得删除同一对话后来创建的新记录。
     if (windows.get(conversationId) === record) windows.delete(conversationId)
     if (win !== null && !win.isDestroyed()) win.destroy()
+    retireSession?.()
     updateDockMenu()
   }
 
@@ -434,8 +474,7 @@ function createConversation(conversationId) {
     const labelOf = (el) => String(
       el.getAttribute('aria-label')
       || el.getAttribute('placeholder')
-      || el.innerText
-      || el.value
+      || (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' ? '' : el.innerText)
       || el.getAttribute('name')
       || el.id
       || el.tagName,
@@ -1213,7 +1252,25 @@ function createConversation(conversationId) {
 
   async function initialize() {
     assertLive()
-    sessionUsed = true
+    let browserSession
+    if (SESSION_MODE === 'shared') {
+      browserSession = session.defaultSession
+      sessionUsed = true
+    } else {
+      // A unique non-persistent partition is never reused, even while clearing it asynchronously.
+      browserSession = session.fromPartition(`dsh-browser-isolated-${windowNumber}`, { cache: false })
+      const uninstall = installNativeSession(browserSession, nativeControllers)
+      browserSession.on('will-download', handleDownload)
+      retireSession = () => {
+        // Keep the download handler to deny late events from the retired partition.
+        Promise.resolve().then(async () => {
+          uninstall()
+          await browserSession.closeAllConnections()
+          await browserSession.clearData()
+          await browserSession.clearCache()
+        }).catch(error => console.error(`[dsh-browser-use-automation] isolated session cleanup failed: ${error.message}`))
+      }
+    }
     // 页面渲染进程与主进程隔离，不启用网页的 Node.js 集成；后台不节流，
     // 让页面任务在不激活窗口时继续运行。show: false 仅控制初始创建状态。
     win = new BrowserWindow({
@@ -1224,7 +1281,7 @@ function createConversation(conversationId) {
       title,
       skipTaskbar: !WINDOWS_TASKBAR,
       webPreferences: {
-        session: session.defaultSession,
+        session: browserSession,
         sandbox: true,
         nodeIntegration: false,
         // Electron 仅在此开关启用时才对子框架运行 preload；仍强制沙箱和隔离，网页不获得 Node。
@@ -1251,6 +1308,7 @@ function createConversation(conversationId) {
         return win.webContents.debugger.sendCommand(method, params)
       }),
       directory: downloadDirectory,
+      remainingDiskBudget: downloadSpace,
       enabled: { files: componentEnabled('files'), requests: componentEnabled('requests') },
     })
     nativeControllers.set(win.webContents, nativeUI)
@@ -1405,15 +1463,6 @@ function onLine(line) {
     return
   }
   if (message === null || typeof message !== 'object' || Array.isArray(message)) return
-  if (authenticated !== true) {
-    if (message.op !== 'hello' || message.token !== TOKEN) {
-      socket.destroy()
-      return
-    }
-    authenticated = true
-    send({ id: message.id, ok: true, result: { pid: process.pid } })
-    return
-  }
   const fail = error => send({ id: message.id, ok: false, error: String(error && error.message ? error.message : error) })
   if (message.op === 'components') {
     try { configureComponents(message.enabled); send({ id: message.id, ok: true, result: { configured: true } }) } catch (error) { fail(error) }
@@ -1505,35 +1554,57 @@ function onLine(line) {
   })
 }
 
-// 只保留第一个连接，额外连接立即关闭；认证和缓冲区由宿主持有，
-// 不需要给多个客户端各建一套。一次 data 事件不等于一条完整 JSON 消息。
 function onConnection(connection) {
-  if (socket !== null) {
+  if (quitting || socket !== null || handshakes.size >= HANDSHAKE_CONNECTION_LIMIT) {
     connection.destroy()
     return
   }
-  socket = connection
-  input = ''
-  authenticated = false
+  handshakes.add(connection)
+  let input = ''
+  let helloBytes = 0
+  const deadline = setTimeout(() => connection.destroy(), HANDSHAKE_TIMEOUT_MS)
+  const endHandshake = () => {
+    clearTimeout(deadline)
+    handshakes.delete(connection)
+  }
   connection.setEncoding('utf8')
   connection.on('data', chunk => {
+    if (connection.destroyed) return
     input += chunk
-    if (input.length > 8 * 1024 * 1024) {
-      connection.destroy()
-      return
-    }
-    let newline = input.indexOf('\n')
-    while (newline >= 0) {
+    while (!connection.destroyed) {
+      const newline = input.indexOf('\n')
+      const bound = newline < 0 ? input.length : newline
+      if (socket === connection) {
+        if (Buffer.byteLength(input.slice(0, bound)) > RPC_BUFFER_LIMIT) return connection.destroy()
+        if (newline < 0) return
+        const line = input.slice(0, newline)
+        input = input.slice(newline + 1)
+        if (line.trim() !== '') onLine(line)
+        continue
+      }
+      const bytes = Buffer.byteLength(input.slice(0, bound)) + (newline < 0 ? 0 : 1)
+      if (helloBytes + bytes > HANDSHAKE_BUFFER_LIMIT) return connection.destroy()
+      if (newline < 0) return
+      helloBytes += bytes
       const line = input.slice(0, newline)
       input = input.slice(newline + 1)
-      if (line.trim() !== '') onLine(line)
-      newline = input.indexOf('\n')
+      if (line.trim() === '') continue
+      let hello
+      try { hello = JSON.parse(line) } catch { return connection.destroy() }
+      const supplied = typeof hello?.token === 'string' ? Buffer.from(hello.token) : null
+      if (quitting || socket !== null || hello?.op !== 'hello' || hello.id !== 0
+        || supplied?.length !== TOKEN.length || !timingSafeEqual(supplied, TOKEN)) return connection.destroy()
+      socket = connection
+      endHandshake()
+      for (const other of handshakes) other.destroy()
+      send({ id: 0, ok: true, result: { pid: process.pid } })
     }
   })
-  connection.on('error', () => {})
+  connection.on('error', () => connection.destroy())
   connection.on('close', () => {
-    // 父进程断开控制连接即结束宿主，避免留下无人管理的后台进程。
-    if (socket === connection) socket = null
+    endHandshake()
+    if (socket !== connection) return
+    socket = null
     quitHost()
   })
 }
@@ -1543,10 +1614,12 @@ async function start() {
   if (configured !== undefined && (!configured || !isAbsolute(configured))) {
     throw new Error('BROWSER_USE_DOWNLOAD_DIR must be an absolute directory path')
   }
-  downloadDirectory = configured || join(process.env.DSH_HOME || join(app.getPath('home'), '.dsh'), 'browser-use', 'downloads')
-  // 必须在任何页面创建前同步注册，并在事件内指定路径；否则 Electron 会弹原生保存对话框。
-  session.defaultSession.on('will-download', handleDownload)
-  installNativeUI(session.defaultSession, ipcMain, nativeControllers)
+  downloadDirectory = resolve(configured || join(process.env.DSH_HOME || join(app.getPath('home'), '.dsh'), 'browser-use', 'downloads'))
+  installNativeIPC(ipcMain, nativeControllers)
+  if (SESSION_MODE === 'shared') {
+    session.defaultSession.on('will-download', handleDownload)
+    installNativeSession(session.defaultSession, nativeControllers)
+  }
   if (HIDE_DOCK) app.dock?.hide()
   updateDockMenu()
   if (WINDOWS_TASKBAR) {

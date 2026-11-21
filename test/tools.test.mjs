@@ -151,6 +151,8 @@ test('scoped snapshot and fast type forward options and match actual host output
   await host.run('state', 'trusted-chat')
   const page = host.natives[0].page
   page.element.querySelectorAll = () => []
+  page.element.type = 'password'
+  page.element.value = 'fixture-private-value'
   const snapshot = h.definitions.get('browser_use_snapshot')
   const result = await snapshot.execute({ selector: '#field', maxElements: 1, includeSelectors: false }, h.exec)
   assertOutput(snapshot.output.schema, result)
@@ -159,6 +161,8 @@ test('scoped snapshot and fast type forward options and match actual host output
   assert.equal(result.truncated, false)
   assert.equal(result.elements[0].selector, undefined)
   assert.equal(snapshot.isConcurrencySafe(), false)
+  assert.doesNotMatch(snapshot.output.render({}, result)[0].text, /fixture-private-value/)
+  page.element.value = ''
   const input = h.definitions.get('browser_use_type')
   const typed = await input.execute({ ref: result.elements[0].ref, text: 'hello😀', mode: 'fast' }, h.exec)
   assertOutput(input.output.schema, typed)

@@ -9,7 +9,7 @@ import { pathToFileURL } from 'node:url'
 const paths = ['package.json', 'index.js', 'src/client.js', 'src/tools.js', 'src/integrity.js',
   'src/core.js', 'src/component.js', 'src/components.json', 'src/prompts.js',
   'src/basic.js', 'src/read.js', 'src/files.js', 'src/requests.js', 'src/eval.js',
-  'host/main.cjs', 'host/native-ui.cjs', 'host/native-preload.cjs', 'cordis.patch.yml', 'README.md', 'LICENSE']
+  'host/main.cjs', 'host/native-ui.cjs', 'host/native-preload.cjs', 'host/download-quota.cjs', 'cordis.patch.yml', 'README.md', 'LICENSE']
 
 async function fixture(t, changeManifest) {
   const root = mkdtempSync(join(tmpdir(), 'browser-use-integrity-'))
@@ -38,8 +38,8 @@ test('complete package verifies independently of the checkout', async t => {
   const h = await fixture(t)
   const result = h.module.verifyInstallation()
   assert.equal(result.version, '0.3.5')
-  assert.equal(result.filesChecked, 18)
-  assert.equal(result.manifestFiles, 20)
+  assert.equal(result.filesChecked, 19)
+  assert.equal(result.manifestFiles, paths.length)
 })
 
 test('modified or missing runtime files are rejected', async t => {

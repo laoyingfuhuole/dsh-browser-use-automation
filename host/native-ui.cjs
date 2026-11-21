@@ -4,22 +4,30 @@ const { randomBytes } = require('node:crypto')
 const { statSync, realpathSync, accessSync, constants, mkdirSync, mkdtempSync, writeFileSync } = require('node:fs')
 const { join, isAbsolute } = require('node:path')
 
-function installNativeUI(session, ipcMain, controllers) {
-  session.registerPreloadScript({ type: 'frame', filePath: join(__dirname, 'native-preload.cjs') })
+function installNativeIPC(ipcMain, controllers) {
   ipcMain.on('dsh-browser-native-ui', (event, payload) => {
     const controller = controllers.get(event.sender)
     if (!controller) { event.returnValue = { accepted: false }; return }
     controller.receive(event, payload)
   })
+}
+
+function installNativeSession(session, controllers) {
+  const preload = session.registerPreloadScript({ type: 'frame', filePath: join(__dirname, 'native-preload.cjs') })
   session.setPermissionCheckHandler(() => false)
   session.setPermissionRequestHandler((contents, permission, callback, details) => {
     const controller = controllers.get(contents)
     if (!controller) { callback(false); return }
     controller.permission(permission, callback, details)
   })
+  return () => {
+    session.unregisterPreloadScript(preload)
+    // Retired partitions must never fall back to Electron's default permission decision.
+    session.setPermissionRequestHandler((_contents, _permission, callback) => callback(false))
+  }
 }
 
-function createNativeUI({ contents, version, interrupt, assertLive, assertOperation, whileLive, command, directory, enabled }) {
+function createNativeUI({ contents, version, interrupt, assertLive, assertOperation, whileLive, command, directory, remainingDiskBudget, enabled }) {
   const pending = new Map()
   const audit = []
   let capabilities = enabled
@@ -209,6 +217,7 @@ function createNativeUI({ contents, version, interrupt, assertLive, assertOperat
       assertOperation()
       if (captured !== version()) throw new Error('page changed during PDF export; inspect before retrying')
       if (!Buffer.isBuffer(data) || data.subarray(0, 5).toString() !== '%PDF-') throw new Error('browser returned invalid PDF data')
+      if (data.length > remainingDiskBudget()) throw new Error('download directory budget exhausted; PDF was not saved')
       mkdirSync(directory, { recursive: true })
       const folder = mkdtempSync(join(directory, 'pdf-'))
       const path = join(folder, 'page.pdf')
@@ -222,4 +231,4 @@ function createNativeUI({ contents, version, interrupt, assertLive, assertOperat
   }
 }
 
-module.exports = { installNativeUI, createNativeUI }
+module.exports = { installNativeIPC, installNativeSession, createNativeUI }

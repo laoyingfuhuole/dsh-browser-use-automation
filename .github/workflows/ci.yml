@@ -47,3 +47,57 @@ jobs:
           node-version: '24'
       - name: Inspect npm package without install scripts
         run: npm pack --dry-run --ignore-scripts
+
+  packed-electron:
+    name: Packed Electron smoke test (macOS)
+    runs-on: macos-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: '24'
+      - name: Verify release manifest and version tag
+        run: |
+          npm run check:release
+          version=$(node -p "require('./package.json').version")
+          if [ "$GITHUB_REF_TYPE" = tag ] && [ "$GITHUB_REF_NAME" != "v$version" ]; then
+            echo 'Tag does not match package.json' >&2
+            exit 1
+          fi
+      - name: Pack and smoke test the exact tarball
+        run: |
+          mkdir -p "$RUNNER_TEMP/browser-release"
+          archive=$(npm pack --pack-destination "$RUNNER_TEMP/browser-release" --ignore-scripts --silent)
+          tar -xzf "$RUNNER_TEMP/browser-release/$archive" -C "$RUNNER_TEMP/browser-release"
+          electron_range=$(node -p "require('./package.json').dependencies.electron")
+          npm install --prefix "$RUNNER_TEMP/browser-release" --no-save --package-lock=false "electron@$electron_range"
+          node scripts/smoke-packed-electron.mjs "$RUNNER_TEMP/browser-release/package"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && github.repository == 'laoyingfuhuole/dsh-browser-use-automation'
+        with:
+          name: tested-npm-tarball
+          path: ${{ runner.temp }}/browser-release/*.tgz
+          if-no-files-found: error
+
+  attest-release:
+    name: Attest tested release tarball
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && github.repository == 'laoyingfuhuole/dsh-browser-use-automation'
+    needs: [test, package, packed-electron]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: tested-npm-tarball
+          path: release
+      - uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4
+        with:
+          subject-path: release/*.tgz
+          create-storage-record: false

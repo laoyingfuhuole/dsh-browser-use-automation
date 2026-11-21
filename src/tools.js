@@ -752,7 +752,7 @@ export function registerTools(ctx, client, config = {}, options = {}) {
 
   register(defineTool({
     name: 'browser_use_reset',
-    description: 'Explicit, user-confirmed recovery only: urgently destroy this conversation’s current browser window and reject its queued/running operations, bypassing its operation queue. All DOM, forms, unsaved input, and page state are lost. Cookies, shared login storage, and other conversation windows are retained. Warn the user about state loss and obtain confirmation before setting confirm to true. No replacement is created until the next normal browser call. Never use for routine end-of-turn cleanup, automatic recovery, or automatic retry of mutations.',
+    description: 'Explicit, user-confirmed recovery only: destroy this conversation’s current browser window and reject its queued/running operations. Page state and unsaved input are lost, as is this window’s login storage in isolated mode. Shared login storage and other windows are retained. Warn the user and obtain confirmation before setting confirm to true. No replacement is created until the next normal browser call. Never use for routine end-of-turn cleanup, automatic recovery, or automatic retry of mutations.',
     parameters: {
       confirm: { type: 'boolean', required: true, description: 'Must be true only after the user confirms recovery and understands the loss of DOM, forms, and page state.' },
     },
@@ -776,7 +776,7 @@ export function registerTools(ctx, client, config = {}, options = {}) {
 
   register(defineTool({
     name: 'browser_use_close',
-    description: 'Explicitly close only this conversation’s background browser window, urgently bypassing its operation queue and rejecting its queued/running operations. The shared host, cookies, and other conversation windows stay alive; the next normal browser call creates a fresh window for this conversation. Never close as routine end-of-turn cleanup; preserve the window across turns.',
+    description: 'Explicitly close only this conversation’s background browser window, urgently bypassing its operation queue and rejecting its queued/running operations. The shared host and other windows stay alive. Shared login storage is retained; isolated login storage is discarded. The next normal call creates a fresh window. Never close as routine end-of-turn cleanup; preserve the window across turns.',
     parameters: {},
     output: {
       schema: {

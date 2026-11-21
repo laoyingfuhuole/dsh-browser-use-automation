@@ -2,6 +2,7 @@ import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import { createRequire } from 'node:module'
 import { EventEmitter } from 'node:events'
+import { sep } from 'node:path'
 import vm from 'node:vm'
 
 const source = readFileSync(new URL('../../host/main.cjs', import.meta.url), 'utf8')
@@ -44,7 +45,7 @@ function createPage() {
   return { context, document, location, element }
 }
 
-export async function createHostHarness(t, { platform = 'linux', authenticate = true } = {}) {
+export async function createHostHarness(t, { platform = 'linux', authenticate = true, env = {}, existingFiles = [] } = {}) {
   const natives = []
   const timeouts = new Map()
   const intervals = new Map()
@@ -52,8 +53,25 @@ export async function createHostHarness(t, { platform = 'linux', authenticate = 
   const output = []
   const ipcMain = new EventEmitter()
   const filesystem = {
-    directories: [], files: new Map(),
+    directories: [], files: new Map(existingFiles),
     mkdirSync(path) { this.directories.push(path) },
+    rmSync(path) {
+      this.directories = this.directories.filter(directory => directory !== path)
+      for (const file of this.files.keys()) if (file.startsWith(path + sep)) this.files.delete(file)
+    },
+    opendirSync(path) {
+      const entries = new Map()
+      for (const [key, directory] of [...this.directories.map(key => [key, true]), ...[...this.files.keys()].map(key => [key, false])]) {
+        if (!key.startsWith(path + sep)) continue
+        const relative = key.slice(path.length + 1).split(sep)
+        const isDirectory = directory || relative.length > 1
+        const name = relative[0]
+        entries.set(name, { name, isDirectory: () => isDirectory, isFile: () => !isDirectory, isSymbolicLink: () => false })
+      }
+      if (!entries.size && !this.directories.includes(path)) throw Object.assign(new Error('directory missing'), { code: 'ENOENT' })
+      const iterator = entries.values()
+      return { readSync: () => iterator.next().value, closeSync() {} }
+    },
     mkdtempSync(prefix) { const path = prefix + String(this.directories.length); this.directories.push(path); return path },
     statSync(path) {
       if (!this.files.has(path)) throw new Error('fixture file missing')
@@ -70,10 +88,22 @@ export async function createHostHarness(t, { platform = 'linux', authenticate = 
     focusCalls: 0, focus() { this.focusCalls++ },
     getPath: name => name === 'home' ? '/fixture/home' : '/fixture/' + name,
   })
-  const defaultSession = Object.assign(new EventEmitter(), { flushes: 0, flushStorageData() { this.flushes++ }, cookies: { async flushStore() {} } })
-  defaultSession.registerPreloadScript = value => { defaultSession.preload = value; return 'fixture-preload' }
-  defaultSession.setPermissionCheckHandler = handler => { defaultSession.permissionCheck = handler }
-  defaultSession.setPermissionRequestHandler = handler => { defaultSession.permissionRequest = handler }
+  function makeSession() {
+    return Object.assign(new EventEmitter(), {
+      flushes: 0, cleanups: 0, flushStorageData() { this.flushes++ }, cookies: { async flushStore() {} },
+      registerPreloadScript(value) { this.preload = value; return 'fixture-preload' },
+      unregisterPreloadScript() { delete this.preload },
+      setPermissionCheckHandler(handler) { this.permissionCheck = handler },
+      setPermissionRequestHandler(handler) { this.permissionRequest = handler },
+      async closeAllConnections() {}, async clearCache() {}, async clearData() { this.cleanups++ },
+    })
+  }
+  const defaultSession = makeSession()
+  const partitions = new Map()
+  const session = { defaultSession, fromPartition(name) {
+    if (!partitions.has(name)) partitions.set(name, makeSession())
+    return partitions.get(name)
+  } }
   class BrowserWindow extends EventEmitter {
     constructor(options) {
       super()
@@ -173,20 +203,23 @@ export async function createHostHarness(t, { platform = 'linux', authenticate = 
   })
   const context = vm.createContext({
     require(name) {
-      if (name === 'electron') return { app, BrowserWindow, screen, ipcMain, session: { defaultSession }, Menu: { buildFromTemplate: items => items } }
+      if (name === 'electron') return { app, BrowserWindow, screen, ipcMain, session, Menu: { buildFromTemplate: items => items } }
       if (name === 'node:net') return { createServer(handler) { accept = handler; return server } }
       if (name === 'node:fs') return {
         mkdirSync: path => filesystem.mkdirSync(path),
         mkdtempSync: path => filesystem.mkdtempSync(path),
         statSync: path => filesystem.statSync(path),
+        lstatSync: path => filesystem.statSync(path),
+        opendirSync: path => filesystem.opendirSync(path),
+        rmSync: path => filesystem.rmSync(path),
         writeFileSync: (...args) => filesystem.writeFileSync(...args),
         realpathSync: path => filesystem.realpathSync(path),
         accessSync: (...args) => filesystem.accessSync(...args),
         constants: filesystem.constants,
       }
-      if (name === './native-ui.cjs') {
+      if (name === './native-ui.cjs' || name === './download-quota.cjs') {
         const module = { exports: {} }
-        const body = readFileSync(new URL('../../host/native-ui.cjs', import.meta.url), 'utf8')
+        const body = readFileSync(new URL(`../../host/${name.slice(2)}`, import.meta.url), 'utf8')
         vm.runInContext(`(function(require,module,exports,__dirname) { ${body}\n })`, context)(context.require, module, module.exports, '/fixture/host')
         return module.exports
       }
@@ -194,7 +227,7 @@ export async function createHostHarness(t, { platform = 'linux', authenticate = 
       if (name === 'node:path' || name === 'node:crypto') return require(name)
       throw new Error(`Unexpected host import: ${name}`)
     },
-    process: { env: { BROWSER_USE_TOKEN: 'fixture-token' }, platform, pid: 123, on() {}, stdout: { write: line => output.push(line) } },
+    process: { env: { BROWSER_USE_TOKEN: 'fixture-token', ...env }, platform, pid: 123, on() {}, stdout: { write: line => output.push(line) } },
     console: { ...console, error: (...args) => output.push(args.join(' ')) }, URL, Buffer,
     setTimeout(callback, ms) { const id = {}; timeouts.set(id, { callback, ms }); return id },
     clearTimeout(id) { timeouts.delete(id) },

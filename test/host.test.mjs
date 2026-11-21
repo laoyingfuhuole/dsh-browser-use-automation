@@ -1,15 +1,15 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { EventEmitter } from 'node:events'
-import { basename, dirname } from 'node:path'
+import { basename, dirname, join, resolve } from 'node:path'
 import { createHostHarness, deferred } from './helpers/host-harness.mjs'
 
 const commandCount = (win, method) => win.commands.filter(command => command.method === method).length
 
-function download(h, win, filename = 'report.pdf', { saveError = false } = {}) {
+function download(h, win, filename = 'report.pdf', { saveError = false, total = 12 } = {}) {
   const event = { prevented: false, preventDefault() { this.prevented = true } }
   const item = Object.assign(new EventEmitter(), {
-    path: undefined, received: 0, total: 12, cancelled: false,
+    path: undefined, received: 0, total, cancelled: false,
     getFilename: () => filename,
     getReceivedBytes() { return this.received }, getTotalBytes() { return this.total },
     setSavePath(path) { if (saveError) throw new Error('save path denied'); this.path = path },
@@ -20,7 +20,8 @@ function download(h, win, filename = 'report.pdf', { saveError = false } = {}) {
       this.emit('done', {}, state)
     },
   })
-  h.defaultSession.emit('will-download', event, item, win?.webContents)
+  const browserSession = win?.options.webPreferences.session ?? h.defaultSession
+  browserSession.emit('will-download', event, item, win?.webContents)
   return { item, event }
 }
 
@@ -125,6 +126,69 @@ test('completed download requires a saved file and terminal history stays bounde
   const entries = (await h.run('downloads')).result.downloads
   assert.equal(entries.length, 50)
   assert.equal(entries.at(-1).filename, '54.txt')
+})
+
+test('download admission counts existing files, reservations and concurrent work across conversations', async t => {
+  const h = await createHostHarness(t, {
+    existingFiles: [[resolve('/fixture/home/.dsh/browser-use/downloads', 'previous', 'old.pdf'), 20]],
+    env: { BROWSER_USE_DOWNLOAD_MAX_FILE_BYTES: '10', BROWSER_USE_DOWNLOAD_MAX_CONCURRENT: '2', BROWSER_USE_DOWNLOAD_MAX_DIRECTORY_BYTES: '35' },
+  })
+  await h.run('state', 'A')
+  await h.run('state', 'B')
+  const [a, b] = h.natives
+  assert.equal(download(h, a, 'too-big', { total: 11 }).event.prevented, true)
+  const first = download(h, a, 'first', { total: 10 })
+  assert.equal(download(h, b, 'no-room', { total: 6 }).event.prevented, true)
+  const unknown = download(h, b, 'unknown', { total: 0 })
+  assert.equal(unknown.event.prevented, false)
+  assert.equal(download(h, a, 'concurrent', { total: 1 }).event.prevented, true)
+  h.filesystem.files.set(unknown.item.path, 6)
+  unknown.item.received = 6
+  unknown.item.emit('updated', {}, 'progressing')
+  assert.equal(unknown.item.cancelled, true)
+  assert.equal(h.filesystem.files.has(unknown.item.path), false)
+  assert.match((await h.run('downloads', 'B')).result.downloads.at(-1).error, /reserved byte budget/)
+  first.item.finish()
+  assert.equal(download(h, b, 'after-completion', { total: 6 }).event.prevented, true)
+  assert.match((await h.run('pdf', 'A')).error, /directory budget/)
+})
+
+test('isolated sessions have their own callbacks and reset never reuses a partition', async t => {
+  const h = await createHostHarness(t, { env: { BROWSER_USE_SESSION_MODE: 'isolated' } })
+  await h.run('state', 'A')
+  await h.run('state', 'B')
+  const [a, b] = h.natives
+  const first = a.options.webPreferences.session
+  assert.notEqual(first, b.options.webPreferences.session)
+  assert.notEqual(first, h.defaultSession)
+  assert.equal(h.ipcMain.listenerCount('dsh-browser-native-ui'), 1)
+  assert.ok(first.preload)
+  assert.equal(first.permissionCheck(), false)
+  download(h, a).item.finish()
+  assert.equal((await h.run('downloads', 'B')).result.downloads.length, 0)
+  await h.run('reset', 'A')
+  await h.flush()
+  assert.equal(first.cleanups, 1)
+  assert.equal(first.preload, undefined)
+  assert.equal(download(h, a).event.prevented, true)
+  assert.equal(b.options.webPreferences.session.cleanups, 0)
+  await h.run('state', 'A')
+  assert.notEqual(h.natives[2].options.webPreferences.session, first)
+})
+
+test('snapshot never reads input or textarea values and keeps the ref actionable', async t => {
+  const h = await createHostHarness(t)
+  await h.run('state')
+  const win = h.natives[0]
+  const input = win.page.element
+  input.type = 'password'
+  input.value = 'fixture-password'
+  const textarea = Object.assign(Object.create(input), { tagName: 'TEXTAREA', value: 'fixture-code', innerText: 'fixture-default' })
+  win.page.document.querySelectorAll = () => [input, textarea]
+  const { result } = await h.run('snapshot')
+  assert.doesNotMatch(JSON.stringify(result), /fixture-(password|code|default)/)
+  assert.equal(result.elements.length, 2)
+  assert.equal((await h.run('type', 'A', { ref: result.elements[0].ref, text: 'x', mode: 'fast' })).ok, true)
 })
 
 function pageRequest(h, win, kind = 'confirm', message = 'Continue?') {
@@ -688,13 +752,32 @@ test('host binds loopback, authenticates split frames and rejects extra control 
   assert.equal(h.natives.length, 0)
 })
 
-test('wrong token closes connection without creating a window', async t => {
+test('invalid, silent and overlong handshakes cannot displace the control connection', async t => {
   const h = await createHostHarness(t, { authenticate: false })
   h.send({ id: 0, op: 'hello', token: 'wrong' })
-  await h.flush()
   assert.equal(h.connection.destroyed, true)
-  assert.equal(h.natives.length, 0)
+  const oversized = h.socket()
+  h.accept(oversized)
+  oversized.emit('data', ' '.repeat(1025))
+  assert.equal(oversized.destroyed, true)
+  const timedOut = h.socket()
+  h.accept(timedOut)
+  h.fire(2000)
+  assert.equal(timedOut.destroyed, true)
+  const silent = h.socket()
+  h.accept(silent)
+  const legitimate = h.socket()
+  h.accept(legitimate)
+  legitimate.emit('data', '{"id":0,"op":"hello","token":"fixture-token"}\n{"id":1,"op":"state","conversationId":"A"}\n')
+  await h.flush()
+  assert.equal(h.response(0).ok, true)
+  assert.equal(h.response(1).ok, true)
+  assert.equal(silent.destroyed, true)
+  assert.equal(h.app.quitCalls, 0)
+  legitimate.destroy()
+  await h.flush()
   assert.equal(h.app.quitCalls, 1)
+  assert.equal(h.natives[0].destroyed, true)
 })
 
 test('invalid routing, unknown operations and malformed frames do not allocate windows', async t => {
@@ -824,7 +907,7 @@ test('scoped snapshots restrict output, honor budgets and replace the old global
   const oldRef = (await h.run('snapshot')).result.elements[0].ref
   const page = h.natives[0].page
   const fields = Array.from({ length: 151 }, (_, index) => Object.assign(Object.create(page.element), {
-    id: `field-${index}`, innerText: `field ${index}`,
+    id: `field-${index}`, getAttribute: name => name === 'aria-label' ? `field ${index}` : null,
   }))
   const root = { matches: () => false, querySelectorAll: () => fields.slice(100, 103) }
   page.document.querySelectorAll = () => fields

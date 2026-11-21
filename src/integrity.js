@@ -13,7 +13,7 @@ const RUNTIME_FILES = new Set([
   'package.json', 'index.js', 'src/client.js', 'src/tools.js', 'src/integrity.js',
   'src/core.js', 'src/component.js', 'src/components.json', 'src/prompts.js',
   'src/basic.js', 'src/read.js', 'src/files.js', 'src/requests.js', 'src/eval.js',
-  'host/main.cjs', 'host/native-ui.cjs', 'host/native-preload.cjs', 'cordis.patch.yml',
+  'host/main.cjs', 'host/native-ui.cjs', 'host/native-preload.cjs', 'host/download-quota.cjs', 'cordis.patch.yml',
 ])
 // 固定当前模块加载时的清单；同路径被市场换包后，旧客户端不能再启动新版 host。
 let loadedManifest
