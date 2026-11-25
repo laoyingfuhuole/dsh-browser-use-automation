@@ -9,7 +9,7 @@ export const componentPrompts = {
   basic: [
     'open/back/reload already return snapshot refs; use them without an immediate second snapshot. A new snapshot replaces old refs.',
     'Scope snapshots with selector/maxElements and includeSelectors=false when appropriate. Click/type/hover using this conversation’s refs.',
-    'For long text use type mode=fast; human is per-code-point input. Both append; interrupted input may be partial: inspect before continuing.',
+    'For long text use type mode=fast; human is per-code-point input. Both insert at the caret and replace selected text. Inspect the field after interrupted input.',
     'Input dispatch is not business success: wait for conditions and assert results. Enter may submit; do not retry automatically.',
     'Use screenshot only when pixels matter (it returns a file path). close only on explicit request, never end-of-turn cleanup.',
     'reset requires a state-loss warning and explicit user confirmation; it discards the page and, in isolated mode, its login storage, but never affects other windows.',

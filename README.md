@@ -4,10 +4,11 @@
 
 ## 当前版本
 
-`v0.7.1`。`browser_use_*` 工具名和既有配置不变；升级后下载默认受配额限制，登录状态仍默认共享。
+`v0.7.2` 修复表单提交、键盘输入、按区域读取和选择器等待中的问题。
 
 ## 功能迭代
 
+- `v0.7.2` 恢复 Enter 和 Space 的默认编辑行为，新窗口表单在当前窗口提交时保留 POST 正文。输入工具明确说明选中文字会被替换，并在缺少可编辑焦点时报告错误。`read` 支持读取 `display: contents` 区域，`wait` 会立即报告非法 CSS 选择器。新增打包产物的真实 Electron 表单回归测试。
 - `v0.7.1`：修复 CI 在两个既有环境上的失败——Node 测试矩阵改用 22.23.5（22.19.0/22.20.0 在 `node --test` 配合 `--experimental-vm-modules` 退出阶段会偶发 SIGSEGV），打包冒烟作业在安装 Electron 后显式执行 `install.js`（Electron 44 起不再有 postinstall，二进制需单独下载）并校验 `path.txt`。功能与工具契约不变。
 - `v0.7.0`：快照不再把输入框或文本域的当前值用作标签；后台下载增加可配置的单文件、并发和目录配额；控制连接通过认证后才占用唯一控制通道。新增按对话隔离的内存会话。CI 对实际 npm 包运行 Electron 冒烟测试，并为官方版本标签的已测试包生成构建来源证明。
 - `v0.6.0`：拆成六个可独立开关的组件（核心进程 + 基础网页操作 / 正文读取 / 文件与 PDF / 网页请求处理 / 高级 JavaScript），共享同一 host，工具名与默认行为不变；新增 `browser_use_requests`、`browser_use_respond`、`browser_use_upload`、`browser_use_pdf`；接管网页原生对话框（confirm/prompt、文件选择、保存）走 IPC，不弹系统框。
@@ -65,8 +66,8 @@ macOS 真实 Electron 回归已覆盖主要路径；Windows 新修复已通过�
 | `browser_use_hover` | 按 ref 悬停，只移动页面指针、不点击 |
 | `browser_use_scroll` | 在页面 CSS 视口坐标发送真实滚轮事件，垂直/水平 |
 | `browser_use_key` | 发送受限功能键与修饰键组合，并尝试释放按下的键 |
-| `browser_use_type` | 聚焦 ref 元素并追加文本，支持 human / fast 模式 |
-| `browser_use_insert_text` | 在当前选区插入文本，无需快照 ref |
+| `browser_use_type` | 聚焦 ref 元素，在光标处输入或替换选中文字，支持 human / fast 模式 |
+| `browser_use_insert_text` | 向当前聚焦的可编辑区域派发文本；缺少可编辑焦点时报错，无需快照 ref |
 | `browser_use_screenshot` | 保存 JPEG 并返回路径 |
 | `browser_use_downloads` | 查询本对话后台下载的保存路径、进度和最终状态 |
 | `browser_use_requests` | 查看本对话待处理的网页弹框、文件选择、权限和打印请求 |
@@ -74,7 +75,7 @@ macOS 真实 Electron 回归已覆盖主要路径；Windows 新修复已通过�
 | `browser_use_upload` | 经主对话明确授权后，向待处理的 HTML 文件选择器提供指定文件 |
 | `browser_use_pdf` | 后台导出当前页面为 PDF，不调用实体打印机或系统打印框 |
 | `browser_use_eval` | 执行页面 JavaScript |
-| `browser_use_wait` | 等待加载 / 选择器 / 文本 / URL |
+| `browser_use_wait` | 等待加载、选择器、文本或 URL；非法选择器立即报错，有效条件超时返回 `ready: false` |
 | `browser_use_assert` | 校验选择器、文本、URL 或 JS 真值 |
 | `browser_use_state` | URL、标题、readyState、首段可见文本 |
 | `browser_use_read` | 读取顶层页面或 CSS 区域的渲染文本，支持长度预算、截断提示和 nextCursor 续读，不刷新 ref |
@@ -155,10 +156,10 @@ HTML `<input type=file>` 的选择框由 CDP 拦截，不显示原生文件选�
 长文本可在 `browser_use_type` 中显式使用快速模式：
 
 ```json
-{ "ref": 151, "text": "要追加的文本", "mode": "fast" }
+{ "ref": 151, "text": "要输入的文本", "mode": "fast" }
 ```
 
-`mode` 只支持 `human`（默认）和 `fast`。原有 human 保持逐 Unicode 码点输入及约 18 ms 间隔；fast 每块最多 256 个 Unicode 码点，不加人为延迟，每块前仍校验原 DOM 节点、可编辑性、遮挡及焦点。两者都在当前选区插入，不自动清空或替换字段；`typed` 是已确认派发的码点数，不保证站点最终接受了全部文本，完成后应检查实际字段。需要逐字事件的站点继续使用 human。
+`mode` 支持 `human`（默认）和 `fast`。human 逐 Unicode 码点输入，间隔约 18 ms。fast 每块最多 256 个码点，每块前校验原 DOM 节点、可编辑性、遮挡及焦点。两种模式都在光标处输入，有选区时会替换选中文字。需要追加时，先将光标移到末尾。`typed` 表示已确认派发的码点数，字段最终内容以页面为准。
 
 fast 遇到目标被移除、焦点变化、取消或 CDP 失败时停止后续块，不自动重试。host 错误会附已获 CDP 确认的输入进度；在途块仍可能完成，不能据该进度直接补输剩余内容。客户端先超时/取消时没有最终进度，只明确提醒可能部分插入或仍在执行，必须先检查页面。正在执行的 CDP 调用仍占用该窗口队列；其他对话不受影响。
 
@@ -180,7 +181,7 @@ fast 遇到目标被移除、焦点变化、取消或 CDP 失败时停止后续�
 
 长度按 JavaScript UTF-16 单元计，截断不拆开 emoji 等字符的代理对，因此实际返回长度可能略小于预算。预算为 1 且下一个字符需要两个单元时会明确要求增大预算，不返回重复的零进度游标。`hasMore: true` 时，把 nextCursor 原样传回即可继续，可重新指定 maxChars；不自动读取剩余内容。游标不保存正文，以每代窗口独立的 HMAC 绑定读取位置、页面版本、区域和正文指纹；跨对话、close/reset、host 重启或令牌被改动都会拒绝。导航或正文变化同样要求重新读取。旧版本的游标不兼容，应重新开始读取。
 
-读取采用浏览器 `innerText` 的渲染文本语义，包括视口之外已渲染的内容，不自动滚动、不改变表单或刷新 snapshot refs。隐藏或无布局的读取根节点返回空文本，避免 `innerText` 在隐藏根上回退为隐藏内容；这不是像素级可见性检测，透明后代、被覆盖文本等仍可能出现在 `innerText` 中。不存在 body 时明确报错；空区域返回空文本而不是伪造内容。
+读取采用浏览器 `innerText` 的渲染文本语义，包括视口之外已渲染的内容。`display: contents` 区域按其内容的布局读取，保留直接文本和可见后代。隐藏或无布局的区域返回空文本。读取保留当前选区和快照 refs。透明后代、被覆盖文本等仍可能出现在 `innerText` 中。不存在 body 时明确报错。
 
 本版只读取顶层 HTML 区域，不递归 iframe 或 Shadow DOM，不做 OCR、文章排序、跨页检索或自动过滤导航。读取期间主框架导航会使 cursor 失效；动态内容在两次读取之间变化时可能需要重新读取。此实现使用页面版本绑定的 opaque cursor 借鉴成熟分页 API 的续读语义，未复制 inner-browser 的读取器，也未更换 Electron/CDP 架构。
 
@@ -368,7 +369,7 @@ host/main.cjs             对话窗口映射、共享 Session、独立 CDP 与�
 
 ## 已知限制
 
-- 每个对话只有一个窗口/页面；`browser_use_open` 只替换本对话页面。网页弹出的 HTTP(S) 链接仍在所属窗口打开，不创建额外无人管理的窗口。
+- 每个对话只有一个窗口。弹出的 HTTP(S) 链接和以新窗口为目标的表单在所属窗口加载，POST 保留正文和来源策略。Electron 44 对完全无字段的 `text/plain` 表单和默认编码提供相同的元数据，两者都会以空 POST 和 `application/x-www-form-urlencoded` 发送。
 - 快照不包含 iframe 和 shadow root；光标只注入顶层文档。
 - 截图只截当前视口，不是整页滚动截图；`fullPage` 是预留参数，暂不生效。
 - 输入通过 `Input.insertText` 完成；human 默认逐码点约 18 ms 间隔，fast 为显式选择的受控分块。快速模式的站点兼容性需按页面实际事件行为验证。

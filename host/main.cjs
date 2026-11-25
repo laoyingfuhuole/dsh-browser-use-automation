@@ -778,7 +778,7 @@ function createConversation(conversationId) {
   }
 
   const KEY_DEFINITIONS = {
-    Enter: { key: 'Enter', code: 'Enter', keyCode: 13 },
+    Enter: { key: 'Enter', code: 'Enter', keyCode: 13, text: '\r' },
     Tab: { key: 'Tab', code: 'Tab', keyCode: 9 },
     Escape: { key: 'Escape', code: 'Escape', keyCode: 27 },
     Backspace: { key: 'Backspace', code: 'Backspace', keyCode: 8 },
@@ -792,7 +792,7 @@ function createConversation(conversationId) {
     ArrowDown: { key: 'ArrowDown', code: 'ArrowDown', keyCode: 40 },
     ArrowLeft: { key: 'ArrowLeft', code: 'ArrowLeft', keyCode: 37 },
     ArrowRight: { key: 'ArrowRight', code: 'ArrowRight', keyCode: 39 },
-    Space: { key: ' ', code: 'Space', keyCode: 32 },
+    Space: { key: ' ', code: 'Space', keyCode: 32, text: ' ' },
     ...Object.fromEntries(Array.from({ length: 12 }, (_, index) => {
       const number = index + 1
       return [`F${number}`, { key: `F${number}`, code: `F${number}`, keyCode: 111 + number }]
@@ -862,8 +862,9 @@ function createConversation(conversationId) {
       await whileLive(() => {
         assertOperation()
         release.unshift({ params: { ...params, type: 'keyUp', modifiers: modifierMask }, modifierBit: 0 })
-        const command = win.webContents.debugger.sendCommand('Input.dispatchKeyEvent', params)
-        return command
+        const producesText = key.text && (modifierMask === 0 || modifierMask === MODIFIER_DEFINITIONS.Shift.bit)
+        return win.webContents.debugger.sendCommand('Input.dispatchKeyEvent',
+          producesText ? { ...params, text: key.text } : params)
       })
       assertOperation()
     } catch (error) {
@@ -926,6 +927,33 @@ function createConversation(conversationId) {
     return { typed: characters.length }
   }
 
+  async function insertText(text) {
+    const contents = win.webContents
+    const frame = contents.focusedFrame
+    const version = documentVersion
+    const editable = frame && await whileLive(() => frame.executeJavaScript(`(() => {
+      let el = document.activeElement
+      while (el?.shadowRoot?.activeElement) el = el.shadowRoot.activeElement
+      if (!el || el.closest('[inert]') || el.matches(':disabled') || el.readOnly) return false
+      if (el.tagName === 'INPUT') return ['text','search','email','url','tel','password','number'].includes(el.type)
+      if (el.tagName === 'TEXTAREA' || el.isContentEditable || el.editContext) return true
+      if (el === document.body || el === document.documentElement) return false
+      // 封闭 shadow tree 内的选区会映射为宿主节点。单查编辑命令会误认已失焦编辑器的旧选区。
+      const range = document.getSelection()?.getComposedRanges()[0]
+      return !!range && range.startContainer === range.endContainer && range.endOffset === range.startOffset + 1
+        && range.startContainer.childNodes[range.startOffset] === el && document.queryCommandEnabled('insertText')
+    })()`))
+    assertOperation()
+    if (!editable) throw new Error('no focused editable target; focus a text field or editor before inserting text')
+    await whileLive(() => {
+      assertOperation()
+      if (frame !== contents.focusedFrame || version !== documentVersion) throw new Error('input focus or page changed before text dispatch')
+      return contents.debugger.sendCommand('Input.insertText', { text })
+    })
+    assertOperation()
+    return { typed: Array.from(text).length }
+  }
+
   // 从页面绘制表面获取 JPEG，不截取整个桌面；透明、屏幕外窗口仍保留此表面。
   async function screenshot() {
     const response = await cdp('Page.captureScreenshot', {
@@ -944,6 +972,7 @@ function createConversation(conversationId) {
     const selector = typeof args.selector === 'string' ? args.selector : ''
     const text = typeof args.text === 'string' ? args.text : ''
     const url = typeof args.url === 'string' ? args.url : ''
+    if (args.selector !== undefined && !selector.trim()) throw new TypeError('wait selector must be a non-empty CSS selector')
     while (Date.now() < deadline) {
       try {
         const state = await evaluate(`(() => {
@@ -959,9 +988,11 @@ function createConversation(conversationId) {
           && (url === '' || state.url.startsWith(url))) {
           return { ready: true, reason: 'ok' }
         }
-      } catch {
+      } catch (error) {
         assertOperation()
-        // 导航可能在这轮检查期间替换执行上下文，等待下一轮重试。
+        // 仅导航切换执行上下文时重新查询；语法错误等永久错误应立即交还调用方。
+        const contextLost = /^(?:Protocol error \(Runtime\.evaluate\): )?(?:execution context was destroyed|cannot find (?:default execution context|context with specified id)|inspected target navigated or closed)/i
+        if (!contextLost.test(error.message)) throw error
       }
       await delay(150)
     }
@@ -1014,9 +1045,15 @@ function createConversation(conversationId) {
       if (!root) throw new Error(selector ? 'read selector did not match an element' : 'page has no body to read')
       if (!(root instanceof HTMLElement)) throw new Error('read target must be an HTML element')
       const style = getComputedStyle(root)
-      const rendered = root.getClientRects().length > 0 && style.display !== 'none'
-        && style.visibility === 'visible' && Number(style.opacity) !== 0
-        && !root.closest('[hidden]')
+      let rendered = false
+      if (style.display !== 'none' && style.visibility === 'visible' && Number(style.opacity) !== 0 && !root.closest('[hidden]')) {
+        if (style.display === 'contents') {
+          // 该容器没有自己的盒子，Range 也能检测直接文本节点的布局，不改动页面选区。
+          const range = document.createRange()
+          range.selectNodeContents(root)
+          rendered = range.getClientRects().length > 0
+        } else rendered = root.getClientRects().length > 0
+      }
       // innerText on an unrendered root can fall back to textContent and expose hidden text.
       const text = rendered ? root.innerText : ''
       let hashA = 2166136261
@@ -1075,11 +1112,7 @@ function createConversation(conversationId) {
       case 'type':
         return type(message.ref, String(message.text ?? ''), message.mode)
       case 'insertText':
-        {
-          const text = String(message.text ?? '')
-          await cdp('Input.insertText', { text })
-          return { typed: Array.from(text).length }
-        }
+        return insertText(String(message.text ?? ''))
       case 'scroll':
         return scroll(message)
       case 'key':
@@ -1316,9 +1349,26 @@ function createConversation(conversationId) {
     setBackgroundProperties()
     // 页面不能再开第二个原生窗口。target=_blank 等 HTTP(S) 链接改在当前
     // 窗口加载，其他新窗口请求拒绝；不影响其他对话已拥有的窗口。
-    win.webContents.setWindowOpenHandler(({ url }) => {
+    win.webContents.setWindowOpenHandler(({ url, referrer, postBody }) => {
       if (!disposed && /^https?:/i.test(url)) {
-        win.loadURL(url).catch(() => {})
+        const options = { httpReferrer: referrer }
+        if (postBody) {
+          options.postData = postBody.data
+          let contentType = postBody.contentType
+          if (postBody.boundary) contentType += '; boundary=' + postBody.boundary
+          // Electron 44 把非 multipart 的表单统一标为 urlencoded。该编码会转义换行，
+          // 而 HTML 的非空 text/plain 表单一定以原始 CRLF 结束。
+          const last = postBody.data.at(-1)
+          if (contentType === 'application/x-www-form-urlencoded' && last?.type === 'rawData'
+            && last.bytes.subarray(-2).toString() === '\r\n') contentType = 'text/plain'
+          options.extraHeaders = 'Content-Type: ' + contentType
+        }
+        const job = activeJob
+        win.loadURL(url, options).catch(error => {
+          if (disposed) return
+          if (job && !job.done) cancelRequest(job, error)
+          else console.error(`[dsh-browser-use-automation] popup navigation failed: ${error.message}`)
+        })
       }
       return { action: 'deny' }
     })

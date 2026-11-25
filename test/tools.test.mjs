@@ -5,6 +5,7 @@ import { readFileSync, mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { createHostHarness } from './helpers/host-harness.mjs'
+import { componentPrompts } from '../src/prompts.js'
 
 function assertOutput(schema, value) {
   assert.equal(typeof value, 'object')
@@ -184,6 +185,19 @@ test('hover forwards only its ref and trusted routing and reports dispatch rathe
   assert.match(tool.output.render({}, result)[0].text, /without clicking.*Dispatch only/)
   await assert.rejects(tool.execute({ ref: 151 }, {}), /exec.agent.id/)
   assert.equal(h.calls.length, 1)
+})
+
+test('model-facing input guidance describes replacing selected text and counts dispatches', async t => {
+  const h = await fixture(t)
+  h.register()
+  const type = h.definitions.get('browser_use_type')
+  for (const guidance of [type.description, componentPrompts.basic]) {
+    assert.match(guidance, /replac\w* (any )?selected text/i)
+    assert.doesNotMatch(guidance, /append/i)
+  }
+  for (const tool of [type, h.definitions.get('browser_use_insert_text')]) {
+    assert.match(tool.output.render({}, { typed: 3 })[0].text, /dispatched 3 unicode code points/i)
+  }
 })
 
 test('scroll and key tools expose constrained actions and preserve conversation routing', async t => {

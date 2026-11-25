@@ -84,6 +84,7 @@ test('close cancels only its active downloads; history and query survive a block
   await h.run('state', 'B')
   const first = download(h, h.natives[0])
   const other = download(h, h.natives[1])
+  h.natives[0].page.element.focus()
   const gate = deferred()
   h.natives[0].onCommand = method => method === 'Input.insertText' ? gate.promise : undefined
   h.submit('insertText', 'A', { text: 'blocked' })
@@ -799,6 +800,7 @@ test('same-conversation requests queue while a different conversation proceeds',
   await h.run('state', 'B')
   const gate = deferred()
   const a = h.natives[0]
+  a.page.element.focus()
   a.onCommand = method => method === 'Input.insertText' ? gate.promise : undefined
   const running = h.submit('insertText', 'A', { text: 'blocked' })
   const before = commandCount(a, 'Runtime.evaluate')
@@ -821,6 +823,7 @@ test('queued cancellation skips its mutation and cross-conversation cancellation
   await h.run('state')
   const gate = deferred()
   const win = h.natives[0]
+  win.page.element.focus()
   win.onCommand = method => method === 'Input.insertText' ? gate.promise : undefined
   const running = h.submit('insertText', 'A', { text: 'first' })
   const queued = h.submit('insertText', 'A', { text: 'must not run' })
@@ -840,6 +843,7 @@ test('canceling running CDP reports promptly but retains its queue barrier', asy
   await h.run('state')
   const gate = deferred()
   const win = h.natives[0]
+  win.page.element.focus()
   win.onCommand = method => method === 'Input.insertText' ? gate.promise : undefined
   const running = h.submit('insertText', 'A', { text: 'in flight' })
   const queued = h.submit('state')
@@ -861,6 +865,7 @@ for (const op of ['close', 'reset']) {
     await h.run('state', 'A')
     await h.run('state', 'B')
     const old = h.natives[0]
+    old.page.element.focus()
     const gate = deferred()
     old.onCommand = method => method === 'Input.insertText' ? gate.promise : undefined
     const running = h.submit('insertText', 'A', { text: 'blocked' })
@@ -891,6 +896,7 @@ test('request deadline cancels without automatically destroying the blocked wind
   const h = await createHostHarness(t)
   await h.run('state')
   const gate = deferred()
+  h.natives[0].page.element.focus()
   h.natives[0].onCommand = method => method === 'Input.insertText' ? gate.promise : undefined
   const id = h.submit('insertText', 'A', { text: 'blocked' })
   await h.flush()
@@ -1117,6 +1123,8 @@ test('canceling during typing delay keeps inserted characters and stops the rema
 
 test('type and insertText count Unicode code points consistently', async t => {
   const h = await createHostHarness(t)
+  await h.run('state')
+  h.natives[0].page.element.focus()
   const text = 'a😀b'
   const inserted = await h.run('insertText', 'A', { text })
   const ref = (await h.run('snapshot', 'A')).result.elements[0].ref
@@ -1127,6 +1135,44 @@ test('type and insertText count Unicode code points consistently', async t => {
   await h.flush()
   assert.equal(inserted.result.typed, 3)
   assert.equal(h.response(id).result.typed, 3)
+})
+
+test('insertText rejects an absent, read-only or disabled target before sending CDP input', async t => {
+  const h = await createHostHarness(t)
+  await h.run('state')
+  const win = h.natives[0]
+  const { element, document } = win.page
+  const insert = () => h.run('insertText', 'A', { text: 'x' })
+  document.activeElement = document.body
+  assert.match((await insert()).error, /focused editable/)
+  element.focus()
+  element.readOnly = true
+  assert.match((await insert()).error, /focused editable/)
+  element.readOnly = false
+  element.disabled = true
+  assert.match((await insert()).error, /focused editable/)
+  element.disabled = false
+  win.webContents.focusedFrame = null
+  assert.match((await insert()).error, /focused editable/)
+  assert.equal(commandCount(win, 'Input.insertText'), 0)
+})
+
+test('insertText drops a pending focus check after cancellation or a frame switch', async t => {
+  const h = await createHostHarness(t)
+  await h.run('state')
+  const win = h.natives[0]
+  for (const cancel of [true, false]) {
+    const gate = deferred()
+    win.webContents.focusedFrame = { executeJavaScript: () => gate.promise }
+    const id = h.submit('insertText', 'A', { text: 'x' })
+    await h.flush()
+    if (cancel) h.cancel(id)
+    else win.webContents.focusedFrame = null
+    gate.resolve(true)
+    await h.flush()
+    assert.match(h.response(id).error, cancel ? /cancelled/ : /focus or page changed/)
+  }
+  assert.equal(commandCount(win, 'Input.insertText'), 0)
 })
 
 test('fast ref input appends 2000 code points in eight bounded CDP chunks without delay', async t => {
@@ -1280,6 +1326,37 @@ test('key chords map to CDP events with platform-specific Mod and always release
   for (const key of ['', 'Control', 'Shift+Control', 'Shift++Tab', 'Ctrl+Ctrl+Enter', 'Ctrl+Unknown', 'Shift+ ']) {
     assert.match((await h.run('key', 'A', { key })).error, /key/)
   }
+})
+
+test('Space and Enter carry text on keydown while shortcut chords and releases carry none', async t => {
+  const h = await createHostHarness(t)
+  for (const [key, expected] of [['Space', ' '], ['Enter', '\r'], ['Shift+Enter', '\r'], ['Mod+Space', undefined]]) {
+    assert.equal((await h.run('key', 'A', { key })).ok, true)
+    const events = h.natives[0].page.keyEvents.splice(0)
+    assert.equal(events.find(event => event.type === 'keyDown' && ['Enter', 'Space'].includes(event.code)).text, expected)
+    assert.ok(events.filter(event => event.type === 'keyUp').every(event => !Object.hasOwn(event, 'text')))
+  }
+})
+
+test('wait reports invalid CSS immediately and retries a destroyed navigation context', async t => {
+  const h = await createHostHarness(t)
+  await h.run('state')
+  const win = h.natives[0]
+  win.page.document.querySelector = () => { throw new SyntaxError('invalid CSS selector') }
+  assert.match((await h.run('wait', 'A', { selector: '[' })).error, /invalid CSS selector/)
+  assert.match((await h.run('wait', 'A', { selector: '  ' })).error, /non-empty CSS selector/)
+  win.page.document.querySelector = () => win.page.element
+  let attempts = 0
+  win.onCommand = method => {
+    if (method === 'Runtime.evaluate' && ++attempts === 1) throw new Error('Execution context was destroyed.')
+  }
+  const id = h.submit('wait', 'A', { selector: '#field' })
+  await h.flush()
+  assert.equal(h.response(id), undefined)
+  h.fire(150)
+  await h.flush()
+  assert.equal(h.response(id).result.ready, true)
+  assert.equal(attempts, 2)
 })
 
 test('canceling after keydown emits keyup events before the next same-window operation', async t => {

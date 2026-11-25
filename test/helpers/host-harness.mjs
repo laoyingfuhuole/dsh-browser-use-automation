@@ -19,6 +19,7 @@ function createPage() {
   class HTMLElement {
     getClientRects() { return [{}] }
     closest() { return null }
+    matches(selector) { return selector === ':disabled' && this.disabled === true }
   }
   const document = { title: 'Fixture', readyState: 'complete', activeElement: null }
   const location = { href: 'https://example.test/' }
@@ -26,7 +27,7 @@ function createPage() {
     tagName: 'INPUT', type: 'text', id: 'field', value: '', isConnected: true,
     ownerDocument: document, style: {},
     getAttribute(name) { return name === 'name' ? 'field' : null },
-    matches() { return true },
+    matches(selector) { return selector === ':disabled' ? this.disabled === true : true },
     getBoundingClientRect() { return { left: 10, top: 20, width: 100, height: 30 } },
     scrollIntoView() {}, contains(node) { return node === this }, closest() { return null },
     focus() { document.activeElement = this },
@@ -122,6 +123,7 @@ export async function createHostHarness(t, { platform = 'linux', authenticate = 
       this.lifecycleCalls = []
       const contents = Object.assign(new EventEmitter(), {
         setWindowOpenHandler(handler) { this.openHandler = handler },
+        focusedFrame: { executeJavaScript: async source => vm.runInContext(source, this.page.context) },
         getURL: () => this.page.location.href,
         printToPDF: async () => Buffer.from('%PDF-1.7\nfixture'),
       })

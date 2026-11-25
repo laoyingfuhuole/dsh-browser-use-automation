@@ -294,7 +294,7 @@ export function registerTools(ctx, client, config = {}, options = {}) {
 
   register(defineTool({
     name: 'browser_use_key',
-    description: 'Press one supported key or modifier chord in this conversation’s background page using CDP keyboard events. Supported keys: Enter, Tab, Escape, Backspace, Delete, Insert, Home, End, PageUp, PageDown, ArrowUp/Down/Left/Right, Space, F1-F12. Modifiers: Control/Ctrl, Alt, Shift, Meta/Cmd/Command, or Mod (Command on macOS, Control elsewhere). Example: Enter or Mod+ArrowLeft. It attempts to release every dispatched key, including after cancellation, and reports release errors. Enter can submit forms; shortcuts may trigger browser/page actions. This does not type text or inspect the clipboard.',
+    description: 'Press one supported key or modifier chord in this conversation’s background page using CDP keyboard events. Supported keys: Enter, Tab, Escape, Backspace, Delete, Insert, Home, End, PageUp, PageDown, ArrowUp/Down/Left/Right, Space, F1-F12. Modifiers: Control/Ctrl, Alt, Shift, Meta/Cmd/Command, or Mod (Command on macOS, Control elsewhere). Example: Enter or Mod+ArrowLeft. It attempts to release every dispatched key, including after cancellation, and reports release errors. In editable fields Space can insert a space and Enter can insert a newline or submit a form. Shortcuts may trigger page actions.',
     parameters: {
       key: { type: 'string', required: true, description: 'A supported key name, optionally prefixed by modifier names joined with +, e.g. Enter, Shift+Tab, Mod+ArrowLeft.' },
     },
@@ -322,7 +322,7 @@ export function registerTools(ctx, client, config = {}, options = {}) {
 
   register(defineTool({
     name: 'browser_use_type',
-    description: 'Append text to a validated editable ref via CDP Input.insertText. Default human mode inserts one Unicode code point at a time; fast mode inserts up to 256 code points per chunk, rechecking the same node and focus between chunks. No replacement or automatic retry. Interrupted input may be partial; inspect before continuing. Use human mode if a site needs per-character events.',
+    description: 'Focus an editable ref and insert at its caret, replacing any selected text. Human mode inserts one Unicode code point at a time. Fast mode inserts up to 256 code points per chunk and rechecks the node and focus between chunks. Inspect the field after interrupted input. Use human mode if a site needs per-character events.',
     parameters: {
       ref: { type: 'number', required: true, description: 'Ref from the latest snapshot.' },
       text: { type: 'string', required: true, description: 'Text to insert.' },
@@ -334,7 +334,7 @@ export function registerTools(ctx, client, config = {}, options = {}) {
         additionalProperties: false,
         properties: { typed: { type: 'number', required: true } },
       },
-      render: (_args, value) => [{ type: 'text', text: `Inserted ${value.typed} characters.` }],
+      render: (_args, value) => [{ type: 'text', text: `Dispatched ${value.typed} Unicode code points to the field.` }],
     },
     timeoutMs: 30_000,
     isConcurrencySafe: () => false,
@@ -345,7 +345,7 @@ export function registerTools(ctx, client, config = {}, options = {}) {
 
   register(defineTool({
     name: 'browser_use_insert_text',
-    description: 'Insert text into the currently focused editable element with CDP Input.insertText, without needing a snapshot ref. Use it for rich-text editors and page bodies; focus the element first with browser_use_eval if it has no ref.',
+    description: 'Insert at the caret of the currently focused text field or editor, replacing any selected text. Focus an editable target first. The returned count measures dispatched Unicode code points.',
     parameters: {
       text: { type: 'string', required: true, description: 'Text to insert at the current selection.' },
     },
@@ -355,7 +355,7 @@ export function registerTools(ctx, client, config = {}, options = {}) {
         additionalProperties: false,
         properties: { typed: { type: 'number', required: true } },
       },
-      render: (_args, value) => [{ type: 'text', text: `Inserted ${value.typed} characters at the current selection.` }],
+      render: (_args, value) => [{ type: 'text', text: `Dispatched ${value.typed} Unicode code points to the focused editor.` }],
     },
     timeoutMs: 30_000,
     isConcurrencySafe: () => false,
@@ -578,7 +578,7 @@ export function registerTools(ctx, client, config = {}, options = {}) {
 
   register(defineTool({
     name: 'browser_use_wait',
-    description: 'Wait until the page is loaded and an optional URL prefix, CSS selector, or body text is present. Returns ready=false with a reason on timeout; a miss is not an error.',
+    description: 'Wait until the page is loaded and an optional URL prefix, CSS selector, or body text is present. Invalid CSS selectors raise an error. Valid conditions that time out return ready=false.',
     parameters: {
       url: { type: 'string', description: 'URL prefix that must match.' },
       selector: { type: 'string', description: 'CSS selector that must exist.' },
