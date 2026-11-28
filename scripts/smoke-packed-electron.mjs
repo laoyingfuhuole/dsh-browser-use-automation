@@ -184,8 +184,24 @@ async function checkTabs(url, call) {
     assert.equal(result.ok, true, result.exception)
     return result.value
   }
+  async function backgroundPixel(tabId) {
+    const shot = await call('screenshot', { tabId })
+    const pixel = await evaluate(tabId, `(async () => {
+      const image = new Image()
+      image.src = 'data:image/jpeg;base64,${shot.base64}'
+      await image.decode()
+      const ctx = document.createElement('canvas').getContext('2d')
+      const x = Math.floor(image.naturalWidth * 0.9)
+      const y = Math.floor(image.naturalHeight * 0.9)
+      ctx.drawImage(image, x, y, 1, 1, 0, 0, 1, 1)
+      return Array.from(ctx.getImageData(0, 0, 1, 1).data).slice(0, 3)
+    })()`)
+    return JSON.parse(pixel)
+  }
   await evaluate(first, `document.body.style.background = 'rgb(17, 85, 170)'; localStorage.setItem('tab-token', 'test');
     ordinary.onclick = () => { window.clickCount = (window.clickCount || 0) + 1 }`)
+  const original = await backgroundPixel(first)
+  assert.ok(original[2] > original[0] + 60, 'expected a blue first tab: ' + original)
   const second = (await call('tabs', { action: 'new' })).activeTabId
   await call('navigate', { tabId: second, url })
   assert.equal(await evaluate(second, "localStorage.getItem('tab-token')"), 'test')
@@ -195,17 +211,13 @@ async function checkTabs(url, call) {
   await call('type', { tabId: first, ref: source.elements.find(item => item.selector === '#field').ref, text: 'kept', mode: 'fast' })
   assert.equal(await evaluate(first, 'field.value'), 'kept')
   assert.equal((await call('tabs', { action: 'list' })).activeTabId, second)
-  const shot = await call('screenshot', { tabId: first })
-  const pixel = await evaluate(second, `(async () => {
-    const image = new Image()
-    image.src = 'data:image/jpeg;base64,${shot.base64}'
-    await image.decode()
-    const ctx = document.createElement('canvas').getContext('2d')
-    ctx.drawImage(image, 0, 0, 1, 1, 0, 0, 1, 1)
-    return Array.from(ctx.getImageData(0, 0, 1, 1).data).slice(0, 3)
-  })()`)
-  const [r, g, b] = JSON.parse(pixel)
-  assert.ok(Math.abs(r - 17) < 8 && Math.abs(g - 85) < 8 && Math.abs(b - 170) < 8, 'wrong tab pixels: ' + pixel)
+  const selected = await backgroundPixel(second)
+  assert.ok(selected[0] > selected[2] + 60, 'expected a red selected tab: ' + selected)
+  const inactive = await backgroundPixel(first)
+  // Compare the same surface across the tab switch using this runner's color pipeline.
+  assert.ok(inactive.every((channel, i) => Math.abs(channel - original[i]) < 8),
+    `inactive screenshot changed: original=${original}, inactive=${inactive}, selected=${selected}`)
+  assert.equal((await call('tabs', { action: 'list' })).activeTabId, second)
   assert.equal((await call('windowState')).focused, false)
   await call('tabs', { action: 'close', tabId: second })
 
