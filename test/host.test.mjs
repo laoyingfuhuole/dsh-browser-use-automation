@@ -4,7 +4,7 @@ import { EventEmitter } from 'node:events'
 import { basename, dirname, join, resolve } from 'node:path'
 import { createHostHarness, deferred } from './helpers/host-harness.mjs'
 
-const commandCount = (win, method) => win.commands.filter(command => command.method === method).length
+const commandCount = (win, method) => win.first.commands.filter(command => command.method === method).length
 
 function download(h, win, filename = 'report.pdf', { saveError = false, total = 12 } = {}) {
   const event = { prevented: false, preventDefault() { this.prevented = true } }
@@ -20,8 +20,8 @@ function download(h, win, filename = 'report.pdf', { saveError = false, total = 
       this.emit('done', {}, state)
     },
   })
-  const browserSession = win?.options.webPreferences.session ?? h.defaultSession
-  browserSession.emit('will-download', event, item, win?.webContents)
+  const browserSession = win?.first.options.webPreferences.session ?? h.defaultSession
+  browserSession.emit('will-download', event, item, win?.first.webContents)
   return { item, event }
 }
 
@@ -84,9 +84,9 @@ test('close cancels only its active downloads; history and query survive a block
   await h.run('state', 'B')
   const first = download(h, h.natives[0])
   const other = download(h, h.natives[1])
-  h.natives[0].page.element.focus()
+  h.natives[0].first.page.element.focus()
   const gate = deferred()
-  h.natives[0].onCommand = method => method === 'Input.insertText' ? gate.promise : undefined
+  h.natives[0].first.onCommand = method => method === 'Input.insertText' ? gate.promise : undefined
   h.submit('insertText', 'A', { text: 'blocked' })
   await h.flush()
   assert.equal((await h.run('downloads', 'A')).result.downloads.length, 1)
@@ -159,8 +159,8 @@ test('isolated sessions have their own callbacks and reset never reuses a partit
   await h.run('state', 'A')
   await h.run('state', 'B')
   const [a, b] = h.natives
-  const first = a.options.webPreferences.session
-  assert.notEqual(first, b.options.webPreferences.session)
+  const first = a.first.options.webPreferences.session
+  assert.notEqual(first, b.first.options.webPreferences.session)
   assert.notEqual(first, h.defaultSession)
   assert.equal(h.ipcMain.listenerCount('dsh-browser-native-ui'), 1)
   assert.ok(first.preload)
@@ -172,20 +172,20 @@ test('isolated sessions have their own callbacks and reset never reuses a partit
   assert.equal(first.cleanups, 1)
   assert.equal(first.preload, undefined)
   assert.equal(download(h, a).event.prevented, true)
-  assert.equal(b.options.webPreferences.session.cleanups, 0)
+  assert.equal(b.first.options.webPreferences.session.cleanups, 0)
   await h.run('state', 'A')
-  assert.notEqual(h.natives[2].options.webPreferences.session, first)
+  assert.notEqual(h.natives[2].first.options.webPreferences.session, first)
 })
 
 test('snapshot never reads input or textarea values and keeps the ref actionable', async t => {
   const h = await createHostHarness(t)
   await h.run('state')
   const win = h.natives[0]
-  const input = win.page.element
+  const input = win.first.page.element
   input.type = 'password'
   input.value = 'fixture-password'
   const textarea = Object.assign(Object.create(input), { tagName: 'TEXTAREA', value: 'fixture-code', innerText: 'fixture-default' })
-  win.page.document.querySelectorAll = () => [input, textarea]
+  win.first.page.document.querySelectorAll = () => [input, textarea]
   const { result } = await h.run('snapshot')
   assert.doesNotMatch(JSON.stringify(result), /fixture-(password|code|default)/)
   assert.equal(result.elements.length, 2)
@@ -193,7 +193,7 @@ test('snapshot never reads input or textarea values and keeps the ref actionable
 })
 
 function pageRequest(h, win, kind = 'confirm', message = 'Continue?') {
-  const event = { sender: win.webContents, senderFrame: { url: win.page.location.href } }
+  const event = { sender: win.first.webContents, senderFrame: { url: win.first.page.location.href } }
   h.ipcMain.emit('dsh-browser-native-ui', event, { kind, message, defaultValue: 'default' })
   return event
 }
@@ -258,12 +258,12 @@ test('disabling request handling cancels a file-component upload before paths re
   const h = await createHostHarness(t)
   await h.run('state')
   const win = h.natives[0]
-  win.webContents.debugger.emit('message', {}, 'Page.fileChooserOpened', { frameId: 'fixture-frame', backendNodeId: 1, mode: 'selectSingle' })
+  win.first.webContents.debugger.emit('message', {}, 'Page.fileChooserOpened', { frameId: 'fixture-frame', backendNodeId: 1, mode: 'selectSingle' })
   await h.flush()
   const requestId = (await h.run('requests')).result.requests[0].id
   h.filesystem.files.set('/fixture/input.txt', 1)
   const gate = deferred()
-  win.onCommand = method => method === 'DOM.describeNode' ? gate.promise : undefined
+  win.first.onCommand = method => method === 'DOM.describeNode' ? gate.promise : undefined
   const id = h.submit('upload', 'A', { component: 'files', requestId, paths: ['/fixture/input.txt'] })
   await h.flush()
   components(h, ['basic', 'read', 'files', 'eval'])
@@ -279,14 +279,14 @@ test('disabling component reports cancellation but does not release an in-flight
   await h.run('state')
   const gate = deferred()
   const win = h.natives[0]
-  win.onCommand = method => method === 'Runtime.evaluate' ? gate.promise : undefined
+  win.first.onCommand = method => method === 'Runtime.evaluate' ? gate.promise : undefined
   const reading = h.submit('read', 'A', { component: 'read' })
   const queued = h.submit('state', 'A', { component: 'basic' })
   await h.flush()
   components(h, ['basic'])
   assert.match(h.response(reading).error, /component disabled: read/)
   assert.equal(h.response(queued), undefined)
-  win.onCommand = undefined
+  win.first.onCommand = undefined
   gate.resolve({ result: { value: {} } })
   await h.flush()
   assert.equal(h.response(queued).ok, true)
@@ -297,7 +297,7 @@ test('page dialogs wait for an explicit response outside the blocked page queue'
   await h.run('state')
   const win = h.natives[0]
   const gate = deferred()
-  win.onCommand = method => {
+  win.first.onCommand = method => {
     if (method === 'Runtime.evaluate') {
       pageRequest(h, win)
       return gate.promise
@@ -330,7 +330,7 @@ test('prompt, permissions and pending requests retain explicit accept/dismiss se
   assert.equal(event.returnValue.accepted, true)
   assert.equal(event.returnValue.value, 'typed by user')
   let granted
-  h.defaultSession.permissionRequest(win.webContents, 'notifications', value => { granted = value })
+  h.defaultSession.permissionRequest(win.first.webContents, 'notifications', value => { granted = value })
   assert.equal(granted, undefined)
   const permission = (await h.run('requests')).result.requests[0]
   assert.equal(permission.kind, 'permission')
@@ -338,29 +338,29 @@ test('prompt, permissions and pending requests retain explicit accept/dismiss se
   assert.equal(granted, false)
   const old = pageRequest(h, win, 'confirm')
   const stale = (await h.run('requests')).result.requests[0].id
-  win.webContents.emit('did-start-navigation', { isMainFrame: true })
+  win.first.webContents.emit('did-start-navigation', { isMainFrame: true })
   assert.equal(old.returnValue.accepted, false)
   assert.match((await h.run('respond', 'A', { requestId: stale, accept: true })).error, /stale/)
   assert.equal(h.defaultSession.permissionCheck(), false)
-  assert.equal(win.options.webPreferences.disableDialogs, true)
+  assert.equal(win.first.options.webPreferences.disableDialogs, true)
 })
 
 test('HTML file choosers are intercepted, accept only regular files and require a current request', async t => {
   const h = await createHostHarness(t)
   await h.run('state')
   const win = h.natives[0]
-  assert.ok(win.commands.some(command => command.method === 'Page.setInterceptFileChooserDialog' && command.params.enabled))
-  win.webContents.debugger.emit('message', {}, 'Page.fileChooserOpened', { backendNodeId: 10, frameId: 'fixture-frame', mode: 'selectSingle' })
+  assert.ok(win.first.commands.some(command => command.method === 'Page.setInterceptFileChooserDialog' && command.params.enabled))
+  win.first.webContents.debugger.emit('message', {}, 'Page.fileChooserOpened', { backendNodeId: 10, frameId: 'fixture-frame', mode: 'selectSingle' })
   await h.flush()
   const request = (await h.run('requests')).result.requests[0]
   assert.equal(request.kind, 'upload')
   assert.equal(request.multiple, false)
-  win.onCommand = method => method === 'DOM.describeNode' ? Promise.resolve({ node: { nodeName: 'INPUT', attributes: ['type', 'file'] } }) : undefined
+  win.first.onCommand = method => method === 'DOM.describeNode' ? Promise.resolve({ node: { nodeName: 'INPUT', attributes: ['type', 'file'] } }) : undefined
   h.filesystem.files.set('/fixture/input.txt', 12)
   assert.match((await h.run('upload', 'A', { requestId: request.id, paths: ['relative'] })).error, /absolute/)
   assert.match((await h.run('upload', 'A', { requestId: request.id, paths: ['/fixture/input.txt', '/fixture/input2.txt'] })).error, /only one/)
   assert.equal((await h.run('upload', 'A', { requestId: request.id, paths: ['/fixture/input.txt'] })).result.files, 1)
-  const sent = win.commands.find(command => command.method === 'DOM.setFileInputFiles')
+  const sent = win.first.commands.find(command => command.method === 'DOM.setFileInputFiles')
   assert.deepEqual(Array.from(sent.params.files), ['/fixture/input.txt'])
   assert.match((await h.run('upload', 'A', { requestId: request.id, paths: ['/fixture/input.txt'] })).error, /stale/)
 })
@@ -387,12 +387,12 @@ test('upload cancellation before file dispatch prevents file selection and clear
   const h = await createHostHarness(t)
   await h.run('state')
   const win = h.natives[0]
-  win.webContents.debugger.emit('message', {}, 'Page.fileChooserOpened', { backendNodeId: 7, frameId: 'fixture-frame', mode: 'selectSingle' })
+  win.first.webContents.debugger.emit('message', {}, 'Page.fileChooserOpened', { backendNodeId: 7, frameId: 'fixture-frame', mode: 'selectSingle' })
   await h.flush()
   const requestId = (await h.run('requests')).result.requests[0].id
   h.filesystem.files.set('/fixture/input.txt', 12)
   const gate = deferred()
-  win.onCommand = method => method === 'DOM.describeNode' ? gate.promise : undefined
+  win.first.onCommand = method => method === 'DOM.describeNode' ? gate.promise : undefined
   const id = h.submit('upload', 'A', { requestId, paths: ['/fixture/input.txt'] })
   await h.flush()
   h.cancel(id)
@@ -408,7 +408,7 @@ test('sensitive permissions stay denied and closing a window dismisses its synch
   await h.run('state')
   const win = h.natives[0]
   let granted
-  h.defaultSession.permissionRequest(win.webContents, 'media', value => { granted = value })
+  h.defaultSession.permissionRequest(win.first.webContents, 'media', value => { granted = value })
   assert.equal(granted, false)
   const unsupported = (await h.run('requests')).result.requests[0]
   assert.equal(unsupported.kind, 'unsupported')
@@ -432,28 +432,28 @@ test('browser request limits remain bounded and subframe navigation invalidates 
   }
   const event = pageRequest(h, win, 'prompt')
   const pending = (await h.run('requests')).result.requests[0]
-  win.webContents.emit('did-start-navigation', { isMainFrame: false })
+  win.first.webContents.emit('did-start-navigation', { isMainFrame: false })
   assert.equal(event.returnValue.accepted, false)
   assert.match((await h.run('respond', 'A', { requestId: pending.id, accept: true })).error, /stale/)
-  assert.equal(win.options.webPreferences.sandbox, true)
-  assert.equal(win.options.webPreferences.contextIsolation, true)
-  assert.equal(win.options.webPreferences.nodeIntegration, false)
-  assert.equal(win.options.webPreferences.nodeIntegrationInSubFrames, true)
+  assert.equal(win.first.options.webPreferences.sandbox, true)
+  assert.equal(win.first.options.webPreferences.contextIsolation, true)
+  assert.equal(win.first.options.webPreferences.nodeIntegration, false)
+  assert.equal(win.first.options.webPreferences.nodeIntegrationInSubFrames, true)
 })
 
 test('HTML directory inputs, missing files and reused dispatches cannot release upload paths', async t => {
   const h = await createHostHarness(t)
   await h.run('state')
   const win = h.natives[0]
-  win.webContents.debugger.emit('message', {}, 'Page.fileChooserOpened', { backendNodeId: 20, frameId: 'fixture-frame', mode: 'selectMultiple' })
+  win.first.webContents.debugger.emit('message', {}, 'Page.fileChooserOpened', { backendNodeId: 20, frameId: 'fixture-frame', mode: 'selectMultiple' })
   await h.flush()
   const requestId = (await h.run('requests')).result.requests[0].id
   assert.match((await h.run('upload', 'A', { requestId, paths: ['/fixture/missing.txt'] })).error, /missing/)
   h.filesystem.files.set('/fixture/input.txt', 12)
-  win.onCommand = method => method === 'DOM.describeNode' ? Promise.resolve({ node: { nodeName: 'INPUT', attributes: ['type', 'file', 'webkitdirectory', ''] } }) : undefined
+  win.first.onCommand = method => method === 'DOM.describeNode' ? Promise.resolve({ node: { nodeName: 'INPUT', attributes: ['type', 'file', 'webkitdirectory', ''] } }) : undefined
   assert.match((await h.run('upload', 'A', { requestId, paths: ['/fixture/input.txt'] })).error, /directory picker/)
   assert.equal(commandCount(win, 'DOM.setFileInputFiles'), 0)
-  win.onCommand = method => {
+  win.first.onCommand = method => {
     if (method === 'DOM.describeNode') return Promise.resolve({ node: { nodeName: 'INPUT', attributes: ['type', 'file'] } })
     if (method === 'DOM.setFileInputFiles') return Promise.reject(new Error('uncertain upload error'))
   }
@@ -466,18 +466,18 @@ test('upload requests identify the requesting child frame and never authorize an
   const h = await createHostHarness(t)
   await h.run('state')
   const win = h.natives[0]
-  win.onCommand = method => method === 'Page.getFrameTree' ? Promise.resolve({
+  win.first.onCommand = method => method === 'Page.getFrameTree' ? Promise.resolve({
     frameTree: { frame: { id: 'top', url: 'https://top.example/' }, childFrames: [
       { frame: { id: 'child', url: 'https://upload.example/frame' } },
     ] },
   }) : undefined
-  win.webContents.debugger.emit('message', {}, 'Page.fileChooserOpened', { backendNodeId: 20, frameId: 'child', mode: 'selectSingle' })
+  win.first.webContents.debugger.emit('message', {}, 'Page.fileChooserOpened', { backendNodeId: 20, frameId: 'child', mode: 'selectSingle' })
   await h.flush()
   const request = (await h.run('requests')).result.requests[0]
   assert.equal(request.url, 'https://upload.example/frame')
   assert.equal(request.kind, 'upload')
   await h.run('respond', 'A', { requestId: request.id, accept: false })
-  win.webContents.debugger.emit('message', {}, 'Page.fileChooserOpened', { backendNodeId: 21, frameId: 'unknown', mode: 'selectSingle' })
+  win.first.webContents.debugger.emit('message', {}, 'Page.fileChooserOpened', { backendNodeId: 21, frameId: 'unknown', mode: 'selectSingle' })
   await h.flush()
   const blocked = (await h.run('requests')).result.requests[0]
   assert.equal(blocked.kind, 'unsupported')
@@ -490,7 +490,7 @@ test('preload failure closes only the affected window rather than falling back t
   const h = await createHostHarness(t)
   await h.run('state', 'A')
   await h.run('state', 'B')
-  h.natives[0].webContents.emit('preload-error', {}, '/fixture/native-preload.cjs', new Error('bridge unavailable'))
+  h.natives[0].first.webContents.emit('preload-error', {}, '/fixture/native-preload.cjs', new Error('bridge unavailable'))
   assert.equal(h.natives[0].destroyed, true)
   assert.equal(h.natives[1].destroyed, false)
   assert.equal((await h.run('state', 'B')).ok, true)
@@ -502,10 +502,10 @@ test('PDF export rejects invalid data, page changes and cancelled output before 
     await h.run('state')
     const win = h.natives[0]
     const gate = deferred()
-    win.webContents.printToPDF = () => gate.promise
+    win.first.webContents.printToPDF = () => gate.promise
     const id = h.submit('pdf')
     await h.flush()
-    if (mode === 'navigate') win.webContents.emit('did-start-navigation', { isMainFrame: true })
+    if (mode === 'navigate') win.first.webContents.emit('did-start-navigation', { isMainFrame: true })
     if (mode === 'cancel') h.cancel(id)
     gate.resolve(Buffer.from(mode === 'invalid' ? 'invalid' : '%PDF-1.7 fixture'))
     await h.flush()
@@ -517,13 +517,13 @@ test('PDF export rejects invalid data, page changes and cancelled output before 
 test('read returns bounded body text with explicit truncation and preserves click refs', async t => {
   const h = await createHostHarness(t)
   const ref = (await h.run('snapshot')).result.elements[0].ref
-  h.natives[0].page.document.body.innerText = 'a'.repeat(7000)
+  h.natives[0].first.page.document.body.innerText = 'a'.repeat(7000)
   const result = (await h.run('read')).result
   assert.equal(result.text, 'a'.repeat(6000))
   assert.equal(result.totalChars, 7000)
   assert.equal(result.returnedChars, 6000)
   assert.equal(result.truncated, true)
-  h.natives[0].page.document.body.innerText = 'x'.repeat(24001)
+  h.natives[0].first.page.document.body.innerText = 'x'.repeat(24001)
   const maximum = (await h.run('read', 'A', { maxChars: 24000 })).result
   assert.equal(maximum.text.length, 24000)
   assert.equal(maximum.totalChars, 24001)
@@ -539,7 +539,7 @@ test('read continues long text with an opaque cursor and reconstructs it exactly
   const h = await createHostHarness(t)
   await h.run('state')
   const text = `${'甲'.repeat(5995)}\n${'乙'.repeat(5995)}\n${'丙'.repeat(5995)}\n${'丁'.repeat(5995)}`
-  h.natives[0].page.document.body.innerText = text
+  h.natives[0].first.page.document.body.innerText = text
   const pages = []
   let cursor
   for (;;) {
@@ -558,9 +558,9 @@ test('read continues long text with an opaque cursor and reconstructs it exactly
 test('read cursors become stale after navigation or selector changes', async t => {
   const h = await createHostHarness(t)
   await h.run('state')
-  h.natives[0].page.document.body.innerText = 'first page content'
+  h.natives[0].first.page.document.body.innerText = 'first page content'
   const first = (await h.run('read', 'A', { maxChars: 5 })).result
-  h.natives[0].webContents.emit('did-start-navigation', { isMainFrame: true })
+  h.natives[0].first.webContents.emit('did-start-navigation', { isMainFrame: true })
   assert.match((await h.run('read', 'A', { cursor: first.nextCursor })).error, /stale read cursor/)
   const fresh = (await h.run('read', 'A', { maxChars: 5 })).result
   assert.match((await h.run('read', 'A', { selector: 'main', cursor: fresh.nextCursor })).error, /stale read cursor/)
@@ -569,7 +569,7 @@ test('read cursors become stale after navigation or selector changes', async t =
 test('read cursor rejects same-length dynamic text changes between pages', async t => {
   const h = await createHostHarness(t)
   await h.run('state')
-  const body = h.natives[0].page.document.body
+  const body = h.natives[0].first.page.document.body
   body.innerText = 'A'.repeat(12000)
   const first = (await h.run('read', 'A', { maxChars: 6000 })).result
   body.innerText = 'B'.repeat(12000)
@@ -579,7 +579,7 @@ test('read cursor rejects same-length dynamic text changes between pages', async
 test('read cursor preserves surrogate pairs at page boundaries', async t => {
   const h = await createHostHarness(t)
   await h.run('state')
-  h.natives[0].page.document.body.innerText = `${'A'.repeat(5999)}😀B`
+  h.natives[0].first.page.document.body.innerText = `${'A'.repeat(5999)}😀B`
   const first = (await h.run('read', 'A', { maxChars: 6000 })).result
   assert.equal(first.returnedChars, 5999)
   assert.equal(first.text.endsWith('😀'), false)
@@ -593,7 +593,7 @@ test('read cursors are bound to the window generation and reject tampering', asy
   const h = await createHostHarness(t)
   await h.run('state', 'A')
   await h.run('state', 'B')
-  for (const win of h.natives) win.page.document.body.innerText = 'same content'
+  for (const win of h.natives) win.first.page.document.body.innerText = 'same content'
   const first = (await h.run('read', 'A', { maxChars: 4 })).result
   assert.match((await h.run('read', 'B', { cursor: first.nextCursor })).error, /wrong window/)
   const [payload, signature] = first.nextCursor.split('.')
@@ -608,7 +608,7 @@ test('read cursors are bound to the window generation and reject tampering', asy
     const old = (await h.run('read', 'A', { maxChars: 4 })).result.nextCursor
     await h.run(op, 'A')
     await h.run('state', 'A')
-    h.natives.at(-1).page.document.body.innerText = 'same content'
+    h.natives.at(-1).first.page.document.body.innerText = 'same content'
     assert.match((await h.run('read', 'A', { cursor: old })).error, /wrong window/)
   }
 })
@@ -616,7 +616,7 @@ test('read cursors are bound to the window generation and reject tampering', asy
 test('read never returns a non-progressing cursor when the budget splits a surrogate pair', async t => {
   const h = await createHostHarness(t)
   await h.run('state')
-  h.natives[0].page.document.body.innerText = 'A😀B'
+  h.natives[0].first.page.document.body.innerText = 'A😀B'
   const first = (await h.run('read', 'A', { maxChars: 1 })).result
   assert.equal(first.text, 'A')
   const tooSmall = await h.run('read', 'A', { cursor: first.nextCursor, maxChars: 1 })
@@ -627,14 +627,14 @@ test('read never returns a non-progressing cursor when the budget splits a surro
   assert.equal(first.text + second.text + third.text, 'A😀B')
   assert.equal(third.hasMore, false)
   assert.equal(third.nextCursor, undefined)
-  h.natives[0].page.document.body.innerText = '😀'
+  h.natives[0].first.page.document.body.innerText = '😀'
   assert.match((await h.run('read', 'A', { maxChars: 1 })).error, /too small/)
 })
 
 test('read continues the original region without resending its selector and survives a new snapshot', async t => {
   const h = await createHostHarness(t)
   await h.run('state')
-  h.natives[0].page.element.innerText = 'abcdef'
+  h.natives[0].first.page.element.innerText = 'abcdef'
   const first = (await h.run('read', 'A', { selector: '#field', maxChars: 2 })).result
   await h.run('snapshot')
   const second = (await h.run('read', 'A', { cursor: first.nextCursor, maxChars: 3 })).result
@@ -664,7 +664,7 @@ test('eval caps serialized results without disconnecting the shared host and pre
 test('read selects a region, handles empty text and avoids splitting surrogate pairs', async t => {
   const h = await createHostHarness(t)
   await h.run('state')
-  const page = h.natives[0].page
+  const page = h.natives[0].first.page
   const selector = '[data-label="quote\\\\value"]'
   page.element.innerText = 'A😀B'
   page.document.querySelector = value => {
@@ -694,7 +694,7 @@ test('read rejects invalid budgets and selectors instead of silently returning s
   for (const selector of ['', ' ', 42, null]) {
     assert.match((await h.run('read', 'A', { selector })).error, /selector/)
   }
-  const page = h.natives[0].page
+  const page = h.natives[0].first.page
   page.document.querySelector = () => null
   assert.match((await h.run('read', 'A', { selector: '#missing' })).error, /did not match/)
   page.document.querySelector = () => { throw new Error('invalid selector') }
@@ -708,7 +708,7 @@ test('read rejects invalid budgets and selectors instead of silently returning s
 test('read suppresses unrendered roots rather than exposing innerText fallback content', async t => {
   const h = await createHostHarness(t)
   await h.run('state')
-  const root = h.natives[0].page.document.body
+  const root = h.natives[0].first.page.document.body
   root.innerText = 'must not be returned'
   for (const style of [{ display: 'none' }, { visibility: 'hidden' }, { opacity: '0' }]) {
     root.style = style
@@ -723,16 +723,16 @@ test('read routes per conversation and rejects a result if navigation changed th
   const h = await createHostHarness(t)
   await h.run('state', 'A')
   await h.run('state', 'B')
-  h.natives[0].page.document.body.innerText = 'page A'
-  h.natives[1].page.document.body.innerText = 'page B'
+  h.natives[0].first.page.document.body.innerText = 'page A'
+  h.natives[1].first.page.document.body.innerText = 'page B'
   assert.equal((await h.run('read', 'A')).result.text, 'page A')
   assert.equal((await h.run('read', 'B')).result.text, 'page B')
   const gate = deferred()
   const win = h.natives[0]
-  win.onCommand = method => method === 'Runtime.evaluate' ? gate.promise : undefined
+  win.first.onCommand = method => method === 'Runtime.evaluate' ? gate.promise : undefined
   const id = h.submit('read', 'A')
   await h.flush()
-  win.webContents.emit('did-start-navigation', { isMainFrame: true })
+  win.first.webContents.emit('did-start-navigation', { isMainFrame: true })
   gate.resolve({ result: { value: { text: 'old page' } } })
   await h.flush()
   assert.match(h.response(id).error, /page changed during read/)
@@ -800,8 +800,8 @@ test('same-conversation requests queue while a different conversation proceeds',
   await h.run('state', 'B')
   const gate = deferred()
   const a = h.natives[0]
-  a.page.element.focus()
-  a.onCommand = method => method === 'Input.insertText' ? gate.promise : undefined
+  a.first.page.element.focus()
+  a.first.onCommand = method => method === 'Input.insertText' ? gate.promise : undefined
   const running = h.submit('insertText', 'A', { text: 'blocked' })
   const before = commandCount(a, 'Runtime.evaluate')
   const queued = h.submit('state', 'A')
@@ -823,8 +823,8 @@ test('queued cancellation skips its mutation and cross-conversation cancellation
   await h.run('state')
   const gate = deferred()
   const win = h.natives[0]
-  win.page.element.focus()
-  win.onCommand = method => method === 'Input.insertText' ? gate.promise : undefined
+  win.first.page.element.focus()
+  win.first.onCommand = method => method === 'Input.insertText' ? gate.promise : undefined
   const running = h.submit('insertText', 'A', { text: 'first' })
   const queued = h.submit('insertText', 'A', { text: 'must not run' })
   await h.flush()
@@ -843,8 +843,8 @@ test('canceling running CDP reports promptly but retains its queue barrier', asy
   await h.run('state')
   const gate = deferred()
   const win = h.natives[0]
-  win.page.element.focus()
-  win.onCommand = method => method === 'Input.insertText' ? gate.promise : undefined
+  win.first.page.element.focus()
+  win.first.onCommand = method => method === 'Input.insertText' ? gate.promise : undefined
   const running = h.submit('insertText', 'A', { text: 'in flight' })
   const queued = h.submit('state')
   await h.flush()
@@ -865,9 +865,9 @@ for (const op of ['close', 'reset']) {
     await h.run('state', 'A')
     await h.run('state', 'B')
     const old = h.natives[0]
-    old.page.element.focus()
+    old.first.page.element.focus()
     const gate = deferred()
-    old.onCommand = method => method === 'Input.insertText' ? gate.promise : undefined
+    old.first.onCommand = method => method === 'Input.insertText' ? gate.promise : undefined
     const running = h.submit('insertText', 'A', { text: 'blocked' })
     const queued = h.submit('state', 'A')
     await h.flush()
@@ -883,7 +883,7 @@ for (const op of ['close', 'reset']) {
     const fresh = h.windows.get('A')
     gate.resolve({})
     old.emit('closed')
-    old.webContents.emit('destroyed')
+    old.first.webContents.emit('destroyed')
     await h.flush()
     assert.equal(h.windows.get('A'), fresh)
     assert.equal(h.natives[2].destroyed, false)
@@ -896,8 +896,8 @@ test('request deadline cancels without automatically destroying the blocked wind
   const h = await createHostHarness(t)
   await h.run('state')
   const gate = deferred()
-  h.natives[0].page.element.focus()
-  h.natives[0].onCommand = method => method === 'Input.insertText' ? gate.promise : undefined
+  h.natives[0].first.page.element.focus()
+  h.natives[0].first.onCommand = method => method === 'Input.insertText' ? gate.promise : undefined
   const id = h.submit('insertText', 'A', { text: 'blocked' })
   await h.flush()
   h.fire(60000)
@@ -911,7 +911,7 @@ test('request deadline cancels without automatically destroying the blocked wind
 test('scoped snapshots restrict output, honor budgets and replace the old global ref map', async t => {
   const h = await createHostHarness(t)
   const oldRef = (await h.run('snapshot')).result.elements[0].ref
-  const page = h.natives[0].page
+  const page = h.natives[0].first.page
   const fields = Array.from({ length: 151 }, (_, index) => Object.assign(Object.create(page.element), {
     id: `field-${index}`, getAttribute: name => name === 'aria-label' ? `field ${index}` : null,
   }))
@@ -946,7 +946,7 @@ test('scoped snapshots restrict output, honor budgets and replace the old global
 test('snapshot validates options and includes an interactive scope root', async t => {
   const h = await createHostHarness(t)
   await h.run('state')
-  const page = h.natives[0].page
+  const page = h.natives[0].first.page
   page.element.querySelectorAll = () => []
   const result = (await h.run('snapshot', 'A', { selector: '#field', maxElements: 1 })).result
   assert.equal(result.elements.length, 1)
@@ -985,7 +985,7 @@ for (const event of ['did-start-navigation', 'did-navigate-in-page']) {
     const h = await createHostHarness(t)
     const a = (await h.run('snapshot', 'A')).result.elements[0].ref
     const b = (await h.run('snapshot', 'B')).result.elements[0].ref
-    const contents = h.natives[0].webContents
+    const contents = h.natives[0].first.webContents
     if (event === 'did-start-navigation') contents.emit(event, { isMainFrame: true })
     else contents.emit(event, {}, 'https://example.test/new', true)
     assert.match((await h.run('click', 'A', { ref: a })).error, /stale/)
@@ -1000,7 +1000,7 @@ for (const event of ['did-start-navigation', 'did-navigate-in-page']) {
 test('removed DOM node is rejected even if a replacement has the same attributes', async t => {
   const h = await createHostHarness(t)
   const ref = (await h.run('snapshot')).result.elements[0].ref
-  const page = h.natives[0].page
+  const page = h.natives[0].first.page
   page.element.isConnected = false
   const replacement = { ...page.element, isConnected: true }
   page.document.querySelector = () => replacement
@@ -1013,14 +1013,14 @@ test('hover moves onto a noneditable control without clicking, native focus or r
   const h = await createHostHarness(t)
   const ref = (await h.run('snapshot')).result.elements[0].ref
   const win = h.natives[0]
-  win.page.element.tagName = 'BUTTON'
+  win.first.page.element.tagName = 'BUTTON'
   const result = await h.run('hover', 'A', { ref })
   assert.deepEqual(result.result, { dispatched: true, ref, x: 60, y: 35 })
-  const input = win.commands.filter(item => item.method === 'Input.dispatchMouseEvent')
+  const input = win.first.commands.filter(item => item.method === 'Input.dispatchMouseEvent')
   assert.deepEqual(input.map(item => item.params.type), ['mouseMoved'])
   assert.equal(input[0].params.button, undefined)
   assert.equal(win.focusCalls, 0)
-  assert.equal(win.page.document.activeElement, null)
+  assert.equal(win.first.page.document.activeElement, null)
   const click = h.submit('click', 'A', { ref })
   await h.flush()
   h.fire(160)
@@ -1035,7 +1035,7 @@ test('hover rejects stale, foreign, removed and covered targets without mouse in
   await h.run('snapshot', 'B')
   assert.match((await h.run('hover', 'A', { ref: old })).error, /stale/)
   assert.match((await h.run('hover', 'B', { ref })).error, /stale/)
-  const page = h.natives[0].page
+  const page = h.natives[0].first.page
   page.element.isConnected = false
   assert.match((await h.run('hover', 'A', { ref })).error, /removed/)
   page.element.isConnected = true
@@ -1047,7 +1047,7 @@ test('hover rejects stale, foreign, removed and covered targets without mouse in
 test('hover revalidates the target after the cursor overlay before dispatch', async t => {
   const h = await createHostHarness(t)
   const ref = (await h.run('snapshot')).result.elements[0].ref
-  const page = h.natives[0].page
+  const page = h.natives[0].first.page
   page.document.createElement = () => {
     page.element.isConnected = false
     throw new Error('decoration failed while page changed')
@@ -1061,7 +1061,7 @@ test('cancellation before hover dispatch prevents pointer movement', async t => 
   const ref = (await h.run('snapshot')).result.elements[0].ref
   const win = h.natives[0]
   const gate = deferred()
-  win.onCommand = method => method === 'Runtime.evaluate' ? gate.promise : undefined
+  win.first.onCommand = method => method === 'Runtime.evaluate' ? gate.promise : undefined
   const id = h.submit('hover', 'A', { ref })
   await h.flush()
   h.cancel(id)
@@ -1076,11 +1076,11 @@ test('in-flight hover keeps its window queue barrier and does not block other co
   const ref = (await h.run('snapshot')).result.elements[0].ref
   const win = h.natives[0]
   const gate = deferred()
-  win.onCommand = method => method === 'Input.dispatchMouseEvent' ? gate.promise : undefined
+  win.first.onCommand = method => method === 'Input.dispatchMouseEvent' ? gate.promise : undefined
   const id = h.submit('hover', 'A', { ref })
   const queued = h.submit('state', 'A')
   await h.flush()
-  assert.equal(win.commands.at(-1).params.type, 'mouseMoved')
+  assert.equal(win.first.commands.at(-1).params.type, 'mouseMoved')
   h.cancel(id)
   assert.match(h.response(id).error, /cancelled/)
   assert.equal(h.response(queued), undefined)
@@ -1097,14 +1097,14 @@ test('canceling after mouse press still releases the same click without retrying
   const ref = (await h.run('snapshot')).result.elements[0].ref
   const win = h.natives[0]
   const gate = deferred()
-  win.onCommand = (method, params) => method === 'Input.dispatchMouseEvent' && params.type === 'mousePressed' ? gate.promise : undefined
+  win.first.onCommand = (method, params) => method === 'Input.dispatchMouseEvent' && params.type === 'mousePressed' ? gate.promise : undefined
   const id = h.submit('click', 'A', { ref })
   await h.flush()
-  assert.equal(win.commands.at(-1).params.type, 'mousePressed')
+  assert.equal(win.first.commands.at(-1).params.type, 'mousePressed')
   h.cancel(id)
   gate.resolve({})
   await h.flush()
-  assert.deepEqual(win.commands.filter(item => item.method === 'Input.dispatchMouseEvent').map(item => item.params.type), ['mouseMoved', 'mousePressed', 'mouseReleased'])
+  assert.deepEqual(win.first.commands.filter(item => item.method === 'Input.dispatchMouseEvent').map(item => item.params.type), ['mouseMoved', 'mousePressed', 'mouseReleased'])
   assert.match(h.response(id).error, /cancelled/)
 })
 
@@ -1113,10 +1113,10 @@ test('canceling during typing delay keeps inserted characters and stops the rema
   const ref = (await h.run('snapshot')).result.elements[0].ref
   const id = h.submit('type', 'A', { ref, text: 'abc' })
   await h.flush()
-  assert.equal(h.natives[0].page.element.value, 'a')
+  assert.equal(h.natives[0].first.page.element.value, 'a')
   h.cancel(id)
   await h.flush()
-  assert.equal(h.natives[0].page.element.value, 'a')
+  assert.equal(h.natives[0].first.page.element.value, 'a')
   assert.match(h.response(id).error, /cancelled/)
   assert.equal(commandCount(h.natives[0], 'Input.insertText'), 1)
 })
@@ -1124,7 +1124,7 @@ test('canceling during typing delay keeps inserted characters and stops the rema
 test('type and insertText count Unicode code points consistently', async t => {
   const h = await createHostHarness(t)
   await h.run('state')
-  h.natives[0].page.element.focus()
+  h.natives[0].first.page.element.focus()
   const text = 'a😀b'
   const inserted = await h.run('insertText', 'A', { text })
   const ref = (await h.run('snapshot', 'A')).result.elements[0].ref
@@ -1141,7 +1141,7 @@ test('insertText rejects an absent, read-only or disabled target before sending 
   const h = await createHostHarness(t)
   await h.run('state')
   const win = h.natives[0]
-  const { element, document } = win.page
+  const { element, document } = win.first.page
   const insert = () => h.run('insertText', 'A', { text: 'x' })
   document.activeElement = document.body
   assert.match((await insert()).error, /focused editable/)
@@ -1152,7 +1152,7 @@ test('insertText rejects an absent, read-only or disabled target before sending 
   element.disabled = true
   assert.match((await insert()).error, /focused editable/)
   element.disabled = false
-  win.webContents.focusedFrame = null
+  win.first.webContents.focusedFrame = null
   assert.match((await insert()).error, /focused editable/)
   assert.equal(commandCount(win, 'Input.insertText'), 0)
 })
@@ -1163,11 +1163,11 @@ test('insertText drops a pending focus check after cancellation or a frame switc
   const win = h.natives[0]
   for (const cancel of [true, false]) {
     const gate = deferred()
-    win.webContents.focusedFrame = { executeJavaScript: () => gate.promise }
+    win.first.webContents.focusedFrame = { executeJavaScript: () => gate.promise }
     const id = h.submit('insertText', 'A', { text: 'x' })
     await h.flush()
     if (cancel) h.cancel(id)
-    else win.webContents.focusedFrame = null
+    else win.first.webContents.focusedFrame = null
     gate.resolve(true)
     await h.flush()
     assert.match(h.response(id).error, cancel ? /cancelled/ : /focus or page changed/)
@@ -1180,12 +1180,12 @@ test('fast ref input appends 2000 code points in eight bounded CDP chunks withou
   const ref = (await h.run('snapshot')).result.elements[0].ref
   const win = h.natives[0]
   const text = 'a😀'.repeat(1000)
-  win.page.element.value = 'prefix'
+  win.first.page.element.value = 'prefix'
   const result = await h.run('type', 'A', { ref, text, mode: 'fast' })
   assert.equal(result.ok, true, result.error)
   assert.equal(result.result.typed, 2000)
-  assert.equal(win.page.element.value, 'prefix' + text)
-  const chunks = win.commands.filter(item => item.method === 'Input.insertText')
+  assert.equal(win.first.page.element.value, 'prefix' + text)
+  const chunks = win.first.commands.filter(item => item.method === 'Input.insertText')
   assert.equal(chunks.length, 8)
   for (const chunk of chunks) assert.ok(Array.from(chunk.params.text).length <= 256)
   assert.equal(h.timeouts.size, 0)
@@ -1199,16 +1199,16 @@ test('fast ref input stops at a focus change and reports confirmed partial progr
   const h = await createHostHarness(t)
   const ref = (await h.run('snapshot')).result.elements[0].ref
   const win = h.natives[0]
-  win.onCommand = method => {
+  win.first.onCommand = method => {
     if (method === 'Input.insertText') {
-      win.page.document.activeElement = null
+      win.first.page.document.activeElement = null
       return Promise.resolve({})
     }
   }
   const result = await h.run('type', 'A', { ref, text: 'x'.repeat(600), mode: 'fast' })
   assert.match(result.error, /input focus changed/)
   assert.match(result.error, /256\/600 Unicode code points acknowledged/)
-  assert.equal(win.page.element.value, 'x'.repeat(256))
+  assert.equal(win.first.page.element.value, 'x'.repeat(256))
   assert.equal(commandCount(win, 'Input.insertText'), 1)
 })
 
@@ -1218,13 +1218,13 @@ test('fast input cancellation retains the in-flight barrier and never retries th
   const win = h.natives[0]
   const gate = deferred()
   let calls = 0
-  win.onCommand = method => {
+  win.first.onCommand = method => {
     if (method === 'Input.insertText' && ++calls === 2) return gate.promise
   }
   const id = h.submit('type', 'A', { ref, text: 'x'.repeat(700), mode: 'fast' })
   const queued = h.submit('state')
   await h.flush()
-  assert.equal(win.page.element.value.length, 256)
+  assert.equal(win.first.page.element.value.length, 256)
   h.cancel(id)
   assert.match(h.response(id).error, /256\/700.*in-flight chunk may still complete/)
   assert.equal(h.response(queued), undefined)
@@ -1232,7 +1232,7 @@ test('fast input cancellation retains the in-flight barrier and never retries th
   gate.resolve({})
   await h.flush()
   assert.equal(h.response(queued).ok, true)
-  assert.equal(win.page.element.value.length, 512)
+  assert.equal(win.first.page.element.value.length, 512)
   assert.equal(commandCount(win, 'Input.insertText'), 2)
   assert.equal(h.responses.filter(item => item.id === id).length, 1)
 })
@@ -1242,13 +1242,13 @@ test('fast input CDP errors retain confirmed progress and do not hide uncertain 
   const ref = (await h.run('snapshot')).result.elements[0].ref
   const win = h.natives[0]
   let calls = 0
-  win.onCommand = method => {
+  win.first.onCommand = method => {
     if (method === 'Input.insertText' && ++calls === 2) return Promise.reject(new Error('CDP failure'))
   }
   const result = await h.run('type', 'A', { ref, text: 'x'.repeat(600), mode: 'fast' })
   assert.match(result.error, /CDP failure.*256\/600.*in-flight chunk may still complete/)
   assert.equal(commandCount(win, 'Input.insertText'), 2)
-  assert.equal(win.page.element.value.length, 256)
+  assert.equal(win.first.page.element.value.length, 256)
 })
 
 test('fast input stops after node removal or navigation instead of using a replacement', async t => {
@@ -1256,10 +1256,10 @@ test('fast input stops after node removal or navigation instead of using a repla
     const h = await createHostHarness(t)
     const ref = (await h.run('snapshot')).result.elements[0].ref
     const win = h.natives[0]
-    win.onCommand = method => {
+    win.first.onCommand = method => {
       if (method === 'Input.insertText') {
-        if (change === 'removed') win.page.element.isConnected = false
-        else win.webContents.emit('did-start-navigation', { isMainFrame: true })
+        if (change === 'removed') win.first.page.element.isConnected = false
+        else win.first.webContents.emit('did-start-navigation', { isMainFrame: true })
         return Promise.resolve({})
       }
     }
@@ -1274,9 +1274,9 @@ test('scroll dispatches a real wheel event at viewport coordinates and validates
   const h = await createHostHarness(t)
   const down = await h.run('scroll', 'A', { deltaY: 600 })
   assert.deepEqual(down.result, { dispatched: true, x: 650, y: 400, deltaX: 0, deltaY: 600 })
-  assert.equal(h.natives[0].page.wheels.length, 1)
-  assert.equal(h.natives[0].page.wheels[0].type, 'mouseWheel')
-  assert.equal(h.natives[0].page.wheels[0].deltaY, 600)
+  assert.equal(h.natives[0].first.page.wheels.length, 1)
+  assert.equal(h.natives[0].first.page.wheels[0].type, 'mouseWheel')
+  assert.equal(h.natives[0].first.page.wheels[0].deltaY, 600)
   const horizontal = await h.run('scroll', 'A', { deltaX: -300, deltaY: 0, x: 10, y: 20 })
   assert.deepEqual(horizontal.result, { dispatched: true, x: 10, y: 20, deltaX: -300, deltaY: 0 })
   assert.deepEqual((await h.run('scroll')).result, { dispatched: true, x: 650, y: 400, deltaX: 0, deltaY: 600 })
@@ -1290,7 +1290,7 @@ test('canceling before wheel dispatch prevents the scroll side effect', async t 
   await h.run('state')
   const gate = deferred()
   const win = h.natives[0]
-  win.onCommand = method => method === 'Page.getLayoutMetrics' ? gate.promise : undefined
+  win.first.onCommand = method => method === 'Page.getLayoutMetrics' ? gate.promise : undefined
   const id = h.submit('scroll', 'A', { deltaY: 400 })
   await h.flush()
   h.cancel(id)
@@ -1305,7 +1305,7 @@ test('key chords map to CDP events with platform-specific Mod and always release
     const h = await createHostHarness(t, { platform })
     const result = await h.run('key', 'A', { key: 'Mod+ArrowLeft' })
     assert.equal(result.ok, true)
-    const events = h.natives[0].page.keyEvents
+    const events = h.natives[0].first.page.keyEvents
     assert.deepEqual(events.map(event => event.type), ['keyDown', 'keyDown', 'keyUp', 'keyUp'])
     assert.deepEqual(events.map(event => event.key), [expected, 'ArrowLeft', 'ArrowLeft', expected])
     assert.equal(events[0].modifiers, events[1].modifiers)
@@ -1318,7 +1318,7 @@ test('key chords map to CDP events with platform-specific Mod and always release
   })
   const chord = await h.run('key', 'A', { key: 'Control+Shift+Enter' })
   assert.equal(chord.ok, true)
-  const multi = h.natives[0].page.keyEvents.slice(-6)
+  const multi = h.natives[0].first.page.keyEvents.slice(-6)
   assert.deepEqual(multi.map(event => [event.type, event.key, event.modifiers]), [
     ['keyDown', 'Control', 2], ['keyDown', 'Shift', 10], ['keyDown', 'Enter', 10],
     ['keyUp', 'Enter', 10], ['keyUp', 'Shift', 2], ['keyUp', 'Control', 0],
@@ -1332,7 +1332,7 @@ test('Space and Enter carry text on keydown while shortcut chords and releases c
   const h = await createHostHarness(t)
   for (const [key, expected] of [['Space', ' '], ['Enter', '\r'], ['Shift+Enter', '\r'], ['Mod+Space', undefined]]) {
     assert.equal((await h.run('key', 'A', { key })).ok, true)
-    const events = h.natives[0].page.keyEvents.splice(0)
+    const events = h.natives[0].first.page.keyEvents.splice(0)
     assert.equal(events.find(event => event.type === 'keyDown' && ['Enter', 'Space'].includes(event.code)).text, expected)
     assert.ok(events.filter(event => event.type === 'keyUp').every(event => !Object.hasOwn(event, 'text')))
   }
@@ -1342,12 +1342,12 @@ test('wait reports invalid CSS immediately and retries a destroyed navigation co
   const h = await createHostHarness(t)
   await h.run('state')
   const win = h.natives[0]
-  win.page.document.querySelector = () => { throw new SyntaxError('invalid CSS selector') }
+  win.first.page.document.querySelector = () => { throw new SyntaxError('invalid CSS selector') }
   assert.match((await h.run('wait', 'A', { selector: '[' })).error, /invalid CSS selector/)
   assert.match((await h.run('wait', 'A', { selector: '  ' })).error, /non-empty CSS selector/)
-  win.page.document.querySelector = () => win.page.element
+  win.first.page.document.querySelector = () => win.first.page.element
   let attempts = 0
-  win.onCommand = method => {
+  win.first.onCommand = method => {
     if (method === 'Runtime.evaluate' && ++attempts === 1) throw new Error('Execution context was destroyed.')
   }
   const id = h.submit('wait', 'A', { selector: '#field' })
@@ -1364,22 +1364,22 @@ test('canceling after keydown emits keyup events before the next same-window ope
   const gate = deferred()
   await h.run('state')
   const win = h.natives[0]
-  win.onCommand = (method, params) => method === 'Input.dispatchKeyEvent' && params.key === 'Enter' && params.type === 'keyDown'
+  win.first.onCommand = (method, params) => method === 'Input.dispatchKeyEvent' && params.key === 'Enter' && params.type === 'keyDown'
     ? gate.promise
     : undefined
   const id = h.submit('key', 'A', { key: 'Shift+Enter' })
   const queued = h.submit('state', 'A')
   await h.flush()
-  const down = win.commands.filter(item => item.method === 'Input.dispatchKeyEvent').map(item => item.params)
+  const down = win.first.commands.filter(item => item.method === 'Input.dispatchKeyEvent').map(item => item.params)
   assert.deepEqual(down.map(event => [event.type, event.key]), [['keyDown', 'Shift'], ['keyDown', 'Enter']])
   h.cancel(id)
   assert.match(h.response(id).error, /cancelled/)
   gate.resolve({})
   await h.flush()
-  assert.deepEqual(win.page.keyEvents.map(event => [event.type, event.key]), [
+  assert.deepEqual(win.first.page.keyEvents.map(event => [event.type, event.key]), [
     ['keyDown', 'Shift'], ['keyDown', 'Enter'], ['keyUp', 'Enter'], ['keyUp', 'Shift'],
   ])
-  assert.deepEqual(win.page.keyEvents.map(event => event.modifiers), [8, 8, 8, 0])
+  assert.deepEqual(win.first.page.keyEvents.map(event => event.modifiers), [8, 8, 8, 0])
   assert.equal(h.response(queued).ok, true)
   assert.equal(h.responses.filter(item => item.id === id).length, 1)
 })
@@ -1388,7 +1388,7 @@ test('key command failures still release active keys and report errors', async t
   const h = await createHostHarness(t)
   await h.run('state')
   const win = h.natives[0]
-  win.onCommand = (method, params) => {
+  win.first.onCommand = (method, params) => {
     if (method === 'Input.dispatchKeyEvent' && params.type === 'keyDown' && params.key === 'Enter') {
       return Promise.reject(new Error('key transport failed'))
     }
@@ -1396,7 +1396,7 @@ test('key command failures still release active keys and report errors', async t
   const result = await h.run('key', 'A', { key: 'Shift+Enter' })
   assert.equal(result.ok, false)
   assert.match(result.error, /key transport failed/)
-  assert.deepEqual(win.page.keyEvents.map(event => [event.type, event.key]), [
+  assert.deepEqual(win.first.page.keyEvents.map(event => [event.type, event.key]), [
     ['keyDown', 'Shift'], ['keyUp', 'Enter'], ['keyUp', 'Shift'],
   ])
 })
@@ -1405,7 +1405,7 @@ test('key release failures remain explicit errors', async t => {
   const h = await createHostHarness(t)
   await h.run('state')
   const win = h.natives[0]
-  win.onCommand = (method, params) => method === 'Input.dispatchKeyEvent' && params.type === 'keyUp'
+  win.first.onCommand = (method, params) => method === 'Input.dispatchKeyEvent' && params.type === 'keyUp'
     ? Promise.reject(new Error('key release failed'))
     : undefined
   const result = await h.run('key', 'A', { key: 'Tab' })
@@ -1417,10 +1417,10 @@ test('navigation waits for the new main-frame lifecycle rather than old complete
   const h = await createHostHarness(t)
   await h.run('state')
   const win = h.natives[0]
-  win.onCommand = (method, params) => {
+  win.first.onCommand = (method, params) => {
     if (method === 'Page.navigate') {
-      win.page.location.href = params.url
-      win.webContents.emit('did-start-navigation', { isMainFrame: true, url: params.url })
+      win.first.page.location.href = params.url
+      win.first.webContents.emit('did-start-navigation', { isMainFrame: true, url: params.url })
       return {}
     }
   }
@@ -1428,13 +1428,13 @@ test('navigation waits for the new main-frame lifecycle rather than old complete
   const id = h.submit('navigate', 'A', { url })
   await h.flush()
   assert.equal(h.response(id), undefined)
-  win.webContents.emit('did-navigate', {}, url, 200)
-  win.webContents.emit('did-finish-load')
+  win.first.webContents.emit('did-navigate', {}, url, 200)
+  win.first.webContents.emit('did-finish-load')
   await h.flush()
   assert.equal(h.response(id).ok, true)
   assert.equal(h.response(id).result.url, url)
   for (const event of ['did-finish-load', 'did-fail-load', 'did-stop-loading']) {
-    assert.equal(win.webContents.listenerCount(event), 0)
+    assert.equal(win.first.webContents.listenerCount(event), event === 'did-stop-loading' ? 1 : 0)
   }
 })
 
@@ -1442,29 +1442,29 @@ test('navigation HTTP errors reject and remove lifecycle listeners', async t => 
   const h = await createHostHarness(t)
   await h.run('state')
   const win = h.natives[0]
-  win.onCommand = (method, params) => {
+  win.first.onCommand = (method, params) => {
     if (method === 'Page.navigate') {
-      win.webContents.emit('did-start-navigation', { isMainFrame: true, url: params.url })
+      win.first.webContents.emit('did-start-navigation', { isMainFrame: true, url: params.url })
       return {}
     }
   }
   const url = 'https://example.test/missing'
   const id = h.submit('navigate', 'A', { url })
   await h.flush()
-  win.webContents.emit('did-navigate', {}, url, 404)
-  win.webContents.emit('did-finish-load')
+  win.first.webContents.emit('did-navigate', {}, url, 404)
+  win.first.webContents.emit('did-finish-load')
   await h.flush()
   assert.match(h.response(id).error, /HTTP 404/)
-  assert.equal(win.webContents.listenerCount('did-finish-load'), 0)
+  assert.equal(win.first.webContents.listenerCount('did-finish-load'), 0)
 })
 
 test('timed-out navigation keeps the queue barrier until the load actually settles', async t => {
   const h = await createHostHarness(t)
   await h.run('state')
   const win = h.natives[0]
-  win.onCommand = (method, params) => {
+  win.first.onCommand = (method, params) => {
     if (method === 'Page.navigate') {
-      win.webContents.emit('did-start-navigation', { isMainFrame: true, url: params.url })
+      win.first.webContents.emit('did-start-navigation', { isMainFrame: true, url: params.url })
       return {}
     }
   }
@@ -1476,11 +1476,11 @@ test('timed-out navigation keeps the queue barrier until the load actually settl
   assert.match(h.response(id).error, /navigation timed out/)
   assert.equal(h.response(queued), undefined)
   assert.equal(win.destroyed, false)
-  win.webContents.emit('did-finish-load')
+  win.first.webContents.emit('did-finish-load')
   await h.flush()
   assert.equal(h.response(queued).ok, true)
   assert.equal(h.responses.filter(item => item.id === id).length, 1)
-  assert.equal(win.webContents.listenerCount('did-finish-load'), 0)
+  assert.equal(win.first.webContents.listenerCount('did-finish-load'), 0)
 })
 
 for (const platform of ['darwin', 'win32', 'linux']) {
@@ -1496,8 +1496,8 @@ for (const platform of ['darwin', 'win32', 'linux']) {
     const initialShow = win.lifecycleCalls.find(call => call.action === 'showInactive')
     assert.equal(initialShow.focusable, platform === 'win32')
     assert.equal(initialShow.opacity, platform === 'win32' ? 1 : 0)
-    assert.equal(win.options.webPreferences.session, h.defaultSession)
-    assert.equal(win.options.webPreferences.backgroundThrottling, false)
+    assert.equal(win.first.options.webPreferences.session, h.defaultSession)
+    assert.equal(win.first.options.webPreferences.backgroundThrottling, false)
     assert.equal(win.visible, true)
     assert.ok(win.getBounds().x + win.getBounds().width < 0)
     assert.equal(win.opacity, platform === 'win32' ? 1 : 0)

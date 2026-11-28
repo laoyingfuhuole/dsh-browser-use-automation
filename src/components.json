@@ -1,7 +1,7 @@
 {
   "basic": {
-    "tools": ["browser_use_open", "browser_use_snapshot", "browser_use_click", "browser_use_hover", "browser_use_scroll", "browser_use_key", "browser_use_type", "browser_use_insert_text", "browser_use_screenshot", "browser_use_wait", "browser_use_assert", "browser_use_state", "browser_use_back", "browser_use_reload", "browser_use_close", "browser_use_reset"],
-    "operations": ["navigate", "snapshot", "click", "hover", "scroll", "key", "type", "insertText", "screenshot", "wait", "eval", "state", "back", "reload", "close", "reset"]
+    "tools": ["browser_use_tabs", "browser_use_open", "browser_use_snapshot", "browser_use_click", "browser_use_hover", "browser_use_scroll", "browser_use_key", "browser_use_type", "browser_use_insert_text", "browser_use_screenshot", "browser_use_wait", "browser_use_assert", "browser_use_state", "browser_use_back", "browser_use_reload", "browser_use_close", "browser_use_reset"],
+    "operations": ["tabs", "navigate", "snapshot", "click", "hover", "scroll", "key", "type", "insertText", "screenshot", "wait", "eval", "state", "back", "reload", "close", "reset"]
   },
   "read": { "tools": ["browser_use_read"], "operations": ["read"] },
   "files": { "tools": ["browser_use_downloads", "browser_use_upload", "browser_use_pdf"], "operations": ["downloads", "requests", "respond", "upload", "pdf"] },

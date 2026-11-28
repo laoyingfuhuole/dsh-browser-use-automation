@@ -53,6 +53,7 @@ export async function createHostHarness(t, { platform = 'linux', authenticate = 
   const responses = []
   const output = []
   const ipcMain = new EventEmitter()
+  ipcMain.handle = (name, handler) => ipcMain.on(name, handler)
   const filesystem = {
     directories: [], files: new Map(existingFiles),
     mkdirSync(path) { this.directories.push(path) },
@@ -105,26 +106,25 @@ export async function createHostHarness(t, { platform = 'linux', authenticate = 
     if (!partitions.has(name)) partitions.set(name, makeSession())
     return partitions.get(name)
   } }
-  class BrowserWindow extends EventEmitter {
+  class WebContentsView {
     constructor(options) {
-      super()
-      this.id = natives.length + 1
       this.options = options
-      this.bounds = { x: 0, y: 0, width: options.width, height: options.height }
       this.page = createPage()
       this.commands = []
-      this.visible = false
-      this.focused = false
       this.destroyed = false
-      this.opacity = 1
-      this.focusCalls = 0
-      this.focusable = options.focusable ?? true
-      this.mouseIgnored = false
-      this.lifecycleCalls = []
       const contents = Object.assign(new EventEmitter(), {
         setWindowOpenHandler(handler) { this.openHandler = handler },
         focusedFrame: { executeJavaScript: async source => vm.runInContext(source, this.page.context) },
         getURL: () => this.page.location.href,
+        mainFrame: {}, isDestroyed: () => this.destroyed,
+        getTitle: () => this.page.document.title || '',
+        loadURL: async url => {
+          const owner = this.owner
+          owner.lifecycleCalls.push({ action: 'loadURL', focusable: owner.focusable, mouseIgnored: owner.mouseIgnored })
+          this.page.location.href = url
+        },
+        focus() {}, isFocused: () => false, close: () => { this.destroyed = true; contents.emit('destroyed') },
+        navigationHistory: { canGoBack: () => false, canGoForward: () => false },
         printToPDF: async () => Buffer.from('%PDF-1.7\nfixture'),
       })
       const debuggerEvents = new EventEmitter()
@@ -140,7 +140,7 @@ export async function createHostHarness(t, { platform = 'linux', authenticate = 
             this.recordCommandEffect(method, params)
             return result
           }
-          if (method === 'Page.getLayoutMetrics') return { cssVisualViewport: { clientWidth: this.options.width - 100, clientHeight: this.options.height - 100 } }
+          if (method === 'Page.getLayoutMetrics') return { cssVisualViewport: { clientWidth: this.owner.options.width - 100, clientHeight: this.owner.options.height - 100 } }
           if (method === 'Page.getFrameTree') return { frameTree: { frame: { id: 'fixture-frame', url: this.page.location.href } } }
           if (method === 'Runtime.evaluate') {
             try { return { result: { value: await vm.runInContext(params.expression, this.page.context, { timeout: 1000 }) } } }
@@ -162,12 +162,40 @@ export async function createHostHarness(t, { platform = 'linux', authenticate = 
         }
       }
       this.webContents = contents
+    }
+    setBounds(bounds) { this.bounds = bounds }
+  }
+  class BrowserWindow extends EventEmitter {
+    constructor(options) {
+      super()
+      this.id = natives.length + 1
+      this.options = options
+      this.bounds = { x: 0, y: 0, width: options.width, height: options.height }
+      this.visible = false
+      this.focused = false
+      this.destroyed = false
+      this.opacity = 1
+      this.focusCalls = 0
+      this.focusable = options.focusable ?? true
+      this.mouseIgnored = false
+      this.lifecycleCalls = []
+      this.views = []
+      this.contentView = {
+        addChildView: view => {
+          view.owner = this
+          this.first ??= view
+          this.views = this.views.filter(item => item !== view).concat(view)
+        },
+        removeChildView: view => { this.views = this.views.filter(item => item !== view) },
+      }
+      this.webContents = Object.assign(new EventEmitter(), {
+        mainFrame: {}, send() {}, focus() {}, isFocused: () => false, isDestroyed: () => this.destroyed,
+        setWindowOpenHandler(handler) { this.openHandler = handler },
+      })
       natives.push(this)
     }
-    async loadURL(url) {
-      this.lifecycleCalls.push({ action: 'loadURL', focusable: this.focusable, mouseIgnored: this.mouseIgnored })
-      this.page.location.href = url
-    }
+    async loadFile() {}
+    getContentSize() { return [this.bounds.width, this.bounds.height] }
     isDestroyed() { return this.destroyed }
     destroy() { if (this.destroyed) return; this.destroyed = true; this.emit('closed'); this.webContents.emit('destroyed') }
     isVisible() { return this.visible }
@@ -205,7 +233,7 @@ export async function createHostHarness(t, { platform = 'linux', authenticate = 
   })
   const context = vm.createContext({
     require(name) {
-      if (name === 'electron') return { app, BrowserWindow, screen, ipcMain, session, Menu: { buildFromTemplate: items => items } }
+      if (name === 'electron') return { app, BrowserWindow, WebContentsView, screen, ipcMain, session, Menu: { buildFromTemplate: items => items } }
       if (name === 'node:net') return { createServer(handler) { accept = handler; return server } }
       if (name === 'node:fs') return {
         mkdirSync: path => filesystem.mkdirSync(path),
@@ -230,6 +258,7 @@ export async function createHostHarness(t, { platform = 'linux', authenticate = 
       throw new Error(`Unexpected host import: ${name}`)
     },
     process: { env: { BROWSER_USE_TOKEN: 'fixture-token', ...env }, platform, pid: 123, on() {}, stdout: { write: line => output.push(line) } },
+    __dirname: '/fixture/host',
     console: { ...console, error: (...args) => output.push(args.join(' ')) }, URL, Buffer,
     setTimeout(callback, ms) { const id = {}; timeouts.set(id, { callback, ms }); return id },
     clearTimeout(id) { timeouts.delete(id) },

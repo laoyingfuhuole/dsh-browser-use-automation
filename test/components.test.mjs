@@ -8,7 +8,7 @@ const definitions = JSON.parse(readFileSync(new URL('../src/components.json', im
 test('component map owns every tool exactly once and every export resolves inside one package', () => {
   const tools = Object.values(definitions).flatMap(group => group.tools)
   assert.equal(new Set(tools).size, tools.length)
-  assert.equal(tools.length, 23)
+  assert.equal(tools.length, 24)
   const pkg = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8'))
   const patch = readFileSync(new URL('../cordis.patch.yml', import.meta.url), 'utf8')
   assert.match(patch, /id: dsh-browser-use-automation\s+name: dsh-browser-use-automation\s/)

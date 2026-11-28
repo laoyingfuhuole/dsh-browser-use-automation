@@ -1,0 +1,23 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; form-action 'none'; base-uri 'none'">
+  <title>浏览器</title>
+  <link rel="stylesheet" href="toolbar.css">
+  <script defer src="toolbar.js"></script>
+</head>
+<body>
+  <header>
+    <div class="strip"><nav id="tabs" aria-label="标签页"></nav><button id="new" title="新建标签页" aria-label="新建标签页">＋</button></div>
+    <form id="navigation" novalidate>
+      <button id="back" type="button" title="后退" aria-label="后退">←</button>
+      <button id="forward" type="button" title="前进" aria-label="前进">→</button>
+      <button id="reload" type="button" title="刷新" aria-label="刷新">↻</button>
+      <input id="address" type="text" aria-label="网址" placeholder="输入网址" autocomplete="off" spellcheck="false">
+      <button type="submit">前往</button>
+      <span id="error" role="status" hidden></span>
+    </form>
+  </header>
+</body>
+</html>

@@ -9,6 +9,7 @@ import { pathToFileURL } from 'node:url'
 const paths = ['package.json', 'index.js', 'src/client.js', 'src/tools.js', 'src/integrity.js',
   'src/core.js', 'src/component.js', 'src/components.json', 'src/prompts.js',
   'src/basic.js', 'src/read.js', 'src/files.js', 'src/requests.js', 'src/eval.js',
+  'host/toolbar.html', 'host/toolbar.css', 'host/toolbar.js', 'host/toolbar-preload.cjs',
   'host/main.cjs', 'host/native-ui.cjs', 'host/native-preload.cjs', 'host/download-quota.cjs', 'cordis.patch.yml', 'README.md', 'LICENSE']
 
 async function fixture(t, changeManifest) {
@@ -38,7 +39,7 @@ test('complete package verifies independently of the checkout', async t => {
   const h = await fixture(t)
   const result = h.module.verifyInstallation()
   assert.equal(result.version, '0.3.5')
-  assert.equal(result.filesChecked, 19)
+  assert.equal(result.filesChecked, 23)
   assert.equal(result.manifestFiles, paths.length)
 })
 

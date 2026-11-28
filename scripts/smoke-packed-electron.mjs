@@ -1,10 +1,13 @@
 import assert from 'node:assert/strict'
+import { spawn } from 'node:child_process'
+import { connect } from 'node:net'
+import { createInterface } from 'node:readline'
 import { once } from 'node:events'
 import { createServer } from 'node:http'
 import { mkdtemp, readFile, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
-import { pathToFileURL } from 'node:url'
+import { fileURLToPath, pathToFileURL } from 'node:url'
 import { setTimeout as delay } from 'node:timers/promises'
 
 const [directory] = process.argv.slice(2)
@@ -16,7 +19,13 @@ const electron = resolveElectronPath()
 const root = await mkdtemp(join(tmpdir(), 'browser-use-packed-smoke-'))
 const fixture = 'fixture download\n'
 const submissions = []
+let retryAttempts = 0
 const server = createServer(async (request, response) => {
+  if (request.url === '/retry') {
+    const status = ++retryAttempts === 1 ? 503 : 200
+    response.writeHead(status, { 'Content-Type': 'text/html' })
+    return response.end(status === 503 ? '<title>Unavailable</title>' : '<title>Recovered</title>')
+  }
   if (request.url === '/forms') {
     response.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' })
     return response.end(`<!doctype html><meta charset="utf-8"><title>Form controls</title>
@@ -92,7 +101,10 @@ async function smoke(mode, url) {
     const interrupted = assert.rejects(dialog, /request is pending/)
     const request = await until(async () => (await call('requests', 'A')).requests.find(item => item.kind === 'confirm'))
     assert.deepEqual((await call('requests', 'B')).requests, [])
+    const otherTab = (await call('tabs', 'A', { action: 'new' })).activeTabId
+    await assert.rejects(call('respond', 'A', { tabId: otherTab, requestId: request.id, accept: false }), /stale/)
     await call('respond', 'A', { requestId: request.id, accept: false })
+    await call('tabs', 'A', { action: 'close', tabId: otherTab })
     await interrupted
     assert.equal(await evaluate('A', 'window.fixtureAnswer'), 'false')
     await call('click', 'A', { ref: fresh.elements.find(element => element.label === 'Download fixture').ref })
@@ -105,6 +117,8 @@ async function smoke(mode, url) {
     assert.equal(denied.path, undefined)
     assert.deepEqual((await call('downloads', 'B')).downloads, [])
     console.log(`PASS: packed Electron (${mode}): navigation, snapshot privacy, storage, dialog and download`)
+    await checkTabs(url, (op, payload) => call(op, 'A', payload))
+    console.log(`PASS: packed Electron (${mode}): inactive tab click, screenshot pixels, shared tab storage and opener closure`)
     await checkForms(url + 'forms', (op, payload) => call(op, 'A', payload), expression => evaluate('A', expression))
     console.log(`PASS: packed Electron (${mode}): keyboard defaults, selection, editable focus, scoped reading, CSS waits and POST forms`)
   } finally {
@@ -116,6 +130,94 @@ async function smoke(mode, url) {
       try { await exited } finally { clearTimeout(timer) }
     }
   }
+}
+
+async function checkToolbar(url) {
+  const driver = fileURLToPath(new URL('../test/helpers/toolbar-electron.cjs', import.meta.url))
+  const env = { ...process.env, BROWSER_USE_TOKEN: 'local-toolbar-test', BROWSER_USE_USER_DATA_DIR: join(root, 'toolbar') }
+  delete env.ELECTRON_RUN_AS_NODE
+  const child = spawn(electron, [driver, resolve(directory), url], { env, stdio: ['ignore', 'pipe', 'inherit', 'ipc'] })
+  const exited = once(child, 'exit')
+  const timeout = setTimeout(() => child.kill('SIGKILL'), 45_000)
+  const output = createInterface({ input: child.stdout })
+  let socket
+  let nextId = 0
+  const awaited = new Map()
+  const send = message => {
+    const id = nextId++
+    socket.write(JSON.stringify({ id, conversationId: 'toolbar', ...message }) + '\n')
+    return id
+  }
+  try {
+    child.on('message', ({ sequence, op, payload }) => {
+      awaited.set(send({ op, ...payload }), sequence)
+    })
+    for await (const line of output) {
+      if (!line.trim()) continue
+      if (socket) { console.log(line); continue }
+      const { port } = JSON.parse(line)
+      socket = connect(port, '127.0.0.1')
+      await once(socket, 'connect')
+      socket.on('error', () => {}) // the test process may exit before the final RPC reply
+      createInterface({ input: socket }).on('line', response => {
+        const { id, ok, result, error } = JSON.parse(response)
+        if (awaited.has(id) && child.connected) child.send({ sequence: awaited.get(id), ok, result, error })
+        awaited.delete(id)
+      })
+      send({ op: 'hello', token: env.BROWSER_USE_TOKEN })
+      send({ op: 'state' })
+    }
+    const [code, signal] = await exited
+    assert.equal(code, 0, 'toolbar Electron exited: ' + (signal || code))
+  } finally {
+    clearTimeout(timeout)
+    socket?.destroy()
+    if (child.exitCode === null && child.signalCode === null) child.kill()
+  }
+}
+
+async function checkTabs(url, call) {
+  const source = await call('navigate', { url: url + 'forms' })
+  const first = source.tabId
+  const evaluate = async (tabId, expression) => {
+    const result = await call('eval', { tabId, expression })
+    assert.equal(result.ok, true, result.exception)
+    return result.value
+  }
+  await evaluate(first, `document.body.style.background = 'rgb(17, 85, 170)'; localStorage.setItem('tab-token', 'test');
+    ordinary.onclick = () => { window.clickCount = (window.clickCount || 0) + 1 }`)
+  const second = (await call('tabs', { action: 'new' })).activeTabId
+  await call('navigate', { tabId: second, url })
+  assert.equal(await evaluate(second, "localStorage.getItem('tab-token')"), 'test')
+  await evaluate(second, "document.body.style.background = 'rgb(240, 20, 60)'")
+  await call('click', { tabId: first, ref: source.elements.find(item => item.selector === '#ordinary').ref })
+  assert.equal(await evaluate(first, 'window.clickCount'), '1')
+  await call('type', { tabId: first, ref: source.elements.find(item => item.selector === '#field').ref, text: 'kept', mode: 'fast' })
+  assert.equal(await evaluate(first, 'field.value'), 'kept')
+  assert.equal((await call('tabs', { action: 'list' })).activeTabId, second)
+  const shot = await call('screenshot', { tabId: first })
+  const pixel = await evaluate(second, `(async () => {
+    const image = new Image()
+    image.src = 'data:image/jpeg;base64,${shot.base64}'
+    await image.decode()
+    const ctx = document.createElement('canvas').getContext('2d')
+    ctx.drawImage(image, 0, 0, 1, 1, 0, 0, 1, 1)
+    return Array.from(ctx.getImageData(0, 0, 1, 1).data).slice(0, 3)
+  })()`)
+  const [r, g, b] = JSON.parse(pixel)
+  assert.ok(Math.abs(r - 17) < 8 && Math.abs(g - 85) < 8 && Math.abs(b - 170) < 8, 'wrong tab pixels: ' + pixel)
+  assert.equal((await call('windowState')).focused, false)
+  await call('tabs', { action: 'close', tabId: second })
+
+  await evaluate(first, `window.open(${JSON.stringify(url)}, '_blank'); true`)
+  const popup = await until(async () => {
+    const state = await call('tabs', { action: 'list' })
+    return state.activeTabId !== first && state.activeTabId
+  })
+  await call('wait', { tabId: popup, selector: '#code' })
+  await evaluate(popup, "document.querySelector('#code').value = 'popup draft'")
+  await call('tabs', { action: 'close', tabId: first })
+  assert.equal(await evaluate(popup, "document.querySelector('#code').value"), 'popup draft')
 }
 
 async function checkForms(url, call, evaluate) {
@@ -161,13 +263,22 @@ async function checkForms(url, call, evaluate) {
   await assert.rejects(call('wait', { selector: '[' }), /selector/i)
   assert.equal((await call('wait', { selector: '.absent', timeoutMs: 250 })).ready, false)
 
+  const sourceTab = (await call('tabs', { action: 'list' })).activeTabId
   for (const encoding of ['application/x-www-form-urlencoded', 'text/plain', 'multipart/form-data', 'empty']) {
     const formPage = await call('navigate', { url })
     if (encoding === 'empty') await evaluate('payload.disabled = true')
     else await evaluate('payload.form.enctype = ' + JSON.stringify(encoding))
+    await evaluate("field.value = 'unsaved draft'")
     const count = submissions.length
     await call('click', { ref: formPage.elements.find(item => item.selector === '#post').ref })
     await until(async () => (await call('state')).title === 'Form received')
+    const { activeTabId, tabs } = await call('tabs', { action: 'list' })
+    assert.equal(tabs.length, 2)
+    assert.notEqual(activeTabId, sourceTab)
+    const draft = await call('eval', { tabId: sourceTab, expression: 'field.value' })
+    assert.equal(draft.value, 'unsaved draft')
+    await call('tabs', { action: 'close', tabId: activeTabId })
+    assert.equal((await call('tabs', { action: 'list' })).activeTabId, sourceTab)
     assert.equal(submissions.length, count + 1)
     const { method, headers, body } = submissions.at(-1)
     assert.equal(method, 'POST')
@@ -193,6 +304,7 @@ try {
   const url = `http://127.0.0.1:${server.address().port}/`
   await smoke('shared', url)
   await smoke('isolated', url)
+  await checkToolbar(url)
 } finally {
   server.closeAllConnections()
   server.close()

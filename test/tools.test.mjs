@@ -52,7 +52,7 @@ async function fixture(t, { failAt, ask } = {}) {
 test('all tools register once with executable schemas and renderers', async t => {
   const h = await fixture(t)
   h.register()
-  assert.equal(h.definitions.size, 23)
+  assert.equal(h.definitions.size, 24)
   for (const definition of h.definitions.values()) {
     assert.equal(typeof definition.execute, 'function')
     assert.equal(typeof definition.output.render, 'function')
@@ -117,7 +117,7 @@ test('a model can continue from the rendered cursor and every real read result m
     return response.result
   }
   await host.run('state', 'trusted-chat')
-  const root = host.natives[0].page.element
+  const root = host.natives[0].first.page.element
   root.innerText = 'article😀tail'
   const tool = h.definitions.get('browser_use_read')
   const first = await tool.execute({ selector: 'article', maxChars: 7 }, h.exec)
@@ -150,7 +150,7 @@ test('scoped snapshot and fast type forward options and match actual host output
     return response.result
   }
   await host.run('state', 'trusted-chat')
-  const page = host.natives[0].page
+  const page = host.natives[0].first.page
   page.element.querySelectorAll = () => []
   page.element.type = 'password'
   page.element.value = 'fixture-private-value'
@@ -441,6 +441,7 @@ test('approved file selection traverses host requests, DSH approval and one-shot
   let asked = 0
   const h = await fixture(t, { ask: async request => {
     asked++
+    await host.run('tabs', 'trusted-chat', { action: 'new' })
     assert.match(request.questions[0].detail, /https:\/\/example.test\//)
     return { answers: [{ id: request.questions[0].id, selected: ['仅本次允许'] }] }
   } })
@@ -452,15 +453,15 @@ test('approved file selection traverses host requests, DSH approval and one-shot
   }
   await host.run('state', 'trusted-chat')
   const win = host.natives[0]
-  win.page.location.href = 'https://example.test/'
-  win.webContents.debugger.emit('message', {}, 'Page.fileChooserOpened', { frameId: 'fixture-frame', backendNodeId: 10, mode: 'selectSingle' })
+  win.first.page.location.href = 'https://example.test/'
+  win.first.webContents.debugger.emit('message', {}, 'Page.fileChooserOpened', { frameId: 'fixture-frame', backendNodeId: 10, mode: 'selectSingle' })
   await host.flush()
   const inspect = h.definitions.get('browser_use_requests')
   const status = await inspect.execute({}, h.exec)
   assertOutput(inspect.output.schema, status)
   assert.equal(status.requests[0].kind, 'upload')
   host.filesystem.files.set('/fixture/upload.pdf', 20)
-  win.onCommand = method => method === 'DOM.describeNode'
+  win.first.onCommand = method => method === 'DOM.describeNode'
     ? Promise.resolve({ node: { nodeName: 'INPUT', attributes: ['type', 'file'] } })
     : undefined
   const upload = h.definitions.get('browser_use_upload')
@@ -468,6 +469,8 @@ test('approved file selection traverses host requests, DSH approval and one-shot
   const result = await upload.execute(input, h.exec)
   assertOutput(upload.output.schema, result)
   assert.equal(result.files, 1)
+  assert.equal(win.first.commands.filter(c => c.method === 'DOM.setFileInputFiles').length, 1)
+  assert.equal(win.views.at(-1).commands.some(c => c.method === 'DOM.setFileInputFiles'), false)
   assert.equal(asked, 1)
   await assert.rejects(upload.execute(input, h.exec), /stale/)
   assert.equal(asked, 1)

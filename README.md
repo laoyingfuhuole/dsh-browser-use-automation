@@ -4,9 +4,11 @@
 
 ## 当前版本
 
-`v0.7.2` 修复表单提交、键盘输入、按区域读取和选择器等待中的问题。
+`v0.8.0` 在每个对话的浏览器窗口加入地址栏和标签栏。人工浏览和 DSH 工具可以操作同一组标签页。
 
 ## 功能迭代
+
+- `v0.8.0` 支持手动输入网址、前进、后退、刷新，以及创建、切换和关闭标签。模型可用 `browser_use_tabs` 查看各页，并用 `tabId` 指定页面。
 
 - `v0.7.2` 恢复 Enter 和 Space 的默认编辑行为，新窗口表单在当前窗口提交时保留 POST 正文。输入工具明确说明选中文字会被替换，并在缺少可编辑焦点时报告错误。`read` 支持读取 `display: contents` 区域，`wait` 会立即报告非法 CSS 选择器。新增打包产物的真实 Electron 表单回归测试。
 - `v0.7.1`：修复 CI 在两个既有环境上的失败——Node 测试矩阵改用 22.23.5（22.19.0/22.20.0 在 `node --test` 配合 `--experimental-vm-modules` 退出阶段会偶发 SIGSEGV），打包冒烟作业在安装 Electron 后显式执行 `install.js`（Electron 44 起不再有 postinstall，二进制需单独下载）并校验 `path.txt`。功能与工具契约不变。
@@ -60,6 +62,7 @@ macOS 真实 Electron 回归已覆盖主要路径；Windows 新修复已通过�
 
 | 工具 | 用途 |
 | --- | --- |
+| `browser_use_tabs` | 用 `list` 查看标签 ID、标题、地址和当前页，用 `new` 新建空白页，用 `select` 或 `close` 操作指定标签 |
 | `browser_use_open` | 打开 http(s) URL 并返回快照 |
 | `browser_use_snapshot` | 返回编号的可交互元素，可限定区域、数量及 selector 展示 |
 | `browser_use_click` | 按快照 ref 执行真实鼠标点击 |
@@ -179,7 +182,7 @@ fast 遇到目标被移除、焦点变化、取消或 CDP 失败时停止后续�
 
 结果包含 `url`、`title`、`text`、`offset`、`totalChars`、`returnedChars`、`truncated`、`hasMore` 和可选 `nextCursor`。`offset` 为本段起点，模型文本会显示实际起止范围和完整游标，避免知道“还有内容”却无法续读。末页 `hasMore: false`，省略 nextCursor（不返回 null）；内部正文指纹不作为公共字段返回，结果与工具 schema 一致。
 
-长度按 JavaScript UTF-16 单元计，截断不拆开 emoji 等字符的代理对，因此实际返回长度可能略小于预算。预算为 1 且下一个字符需要两个单元时会明确要求增大预算，不返回重复的零进度游标。`hasMore: true` 时，把 nextCursor 原样传回即可继续，可重新指定 maxChars；不自动读取剩余内容。游标不保存正文，以每代窗口独立的 HMAC 绑定读取位置、页面版本、区域和正文指纹；跨对话、close/reset、host 重启或令牌被改动都会拒绝。导航或正文变化同样要求重新读取。旧版本的游标不兼容，应重新开始读取。
+长度按 JavaScript UTF-16 单元计，截断不拆开 emoji 等字符的代理对，因此实际返回长度可能略小于预算。预算为 1 且下一个字符需要两个单元时会明确要求增大预算，不返回重复的零进度游标。`hasMore: true` 时，把 nextCursor 原样传回即可继续，可重新指定 maxChars；不自动读取剩余内容。游标不保存正文，以每个标签独立的 HMAC 绑定读取位置、页面版本、区域和正文指纹；跨对话、close/reset、host 重启或令牌被改动都会拒绝。导航或正文变化同样要求重新读取。旧版本的游标不兼容，应重新开始读取。
 
 读取采用浏览器 `innerText` 的渲染文本语义，包括视口之外已渲染的内容。`display: contents` 区域按其内容的布局读取，保留直接文本和可见后代。隐藏或无布局的区域返回空文本。读取保留当前选区和快照 refs。透明后代、被覆盖文本等仍可能出现在 `innerText` 中。不存在 body 时明确报错。
 
@@ -189,9 +192,11 @@ fast 遇到目标被移除、焦点变化、取消或 CDP 失败时停止后续�
 
 - 工具从 DSH 执行上下文的 `exec.agent.id` 获取对话标识；同一对话复用窗口，不同对话使用不同窗口。模型无需、也不能通过参数选择窗口。缺失标识时明确报错。
 - 编号只用于标题和 Dock 菜单，在本次 host 生命周期中递增；内部始终按对话 ID 路由，不能将编号或快照 ref 当作跨对话标识。
-- 每个窗口独立持有页面、快照 ref、CDP 会话和操作队列。同窗口顺序执行，不同窗口可并行。
+- 每个标签独立持有页面、快照 ref、读取游标、CDP 会话和操作队列。同一标签的页面操作依次执行，不同标签可以并行。
+- 人工查看窗口时，在地址栏输入 HTTP(S) 网址后按 Enter。省略协议时使用 HTTPS。用标签栏的 ＋、标题和 × 新建、切换、关闭页面。macOS 使用 Cmd+L/T/W，其余平台使用 Ctrl+L/T/W，分别定位地址栏、新建和关闭当前标签。关闭最后一页会保留一个空白页。
+- 页面工具默认操作宿主收到请求时选中的标签。多步任务可先用 `browser_use_tabs` 获取 `tabId`，后续调用一直传入该 ID。切换标签会保留草稿。关闭标签会取消该页的任务和待审批请求。整窗 `browser_use_close` 和 `browser_use_reset` 会关闭该对话的全部标签。
 - 默认使用 `BROWSER_USE_SESSION_MODE=shared`，保留之前的默认数据目录。同源 Cookie、localStorage、IndexedDB 等共享，退出登录或切换账号会影响其他窗口。
-- 启动 host 前设置 `BROWSER_USE_SESSION_MODE=isolated`，每个对话窗口使用独立、非持久化的会话；close/reset 后的新窗口不继承旧登录。不会迁移或删除共享资料，下载等落盘产物也不会被清除。这不是 OS 或网络隔离。
+- 启动 host 前设置 `BROWSER_USE_SESSION_MODE=isolated`，同一对话的标签共享一份独立、非持久化的会话；close/reset 后的新窗口不继承旧登录。不会迁移或删除共享资料，下载等落盘产物也不会被清除。这不是 OS 或网络隔离。
 - 共享的是插件的浏览器数据，不是系统 Chrome 的账户、书签或资料。不要启动多个 host 进程同时写同一个数据目录。
 - 默认跨轮次保留窗口、页面和未提交内容，不因一轮回复结束或空闲而回收。仅用户明确要求关闭/恢复时调用 `browser_use_close` 或 `browser_use_reset`；插件卸载、断连或应用退出才结束共享 host。
 
@@ -316,7 +321,7 @@ npm test -- --test-name-pattern="startup|cancel"
 - **组件启停**：同包 exports、tool 分组唯一归属、共享客户端、首次/运行中能力配置同步、工具/提示卸载、取消待审操作、禁用后 host 拒绝下载/旧调用及核心级联依赖。另在临时 profile 副本使用官方 Cordis 4.1.0 / loader 1.1.0 验证六行加载、单组开关、核心级联和重新注册；真实 Electron 验证运行中切换不换 PID、不丢其他页面。未操作正在运行的真实插件页开关，界面外观/HMR及市场迁移仍待验收。
 - **安装完整性**：在独立临时包中检查运行文件改动/缺失、清单变更、非法清单和版本混装；运行时校验只阻断执行文件，发布校验仍覆盖完整包。
 
-[CI 工作流](.github/workflows/ci.yml) 在 push、pull request 和手动触发时，对 Ubuntu/Windows/macOS × Node 22.23.5/24 运行隔离回归、语法检查、发布清单和安装自检，另检查 npm 打包内容。独立 macOS 作业为打包产物安装 Electron（Electron 44 起没有 postinstall，需显式运行 `node node_modules/electron/install.js` 下载二进制），在临时资料目录和本地测试页上验证导航、快照脱敏、共享/隔离登录状态、弹框和下载。不启动 DSH，也不验证 DSH 反问卡片。CI 不自动生成清单；修改发布文件后要主动运行 `npm run prepare:release`。
+[CI 工作流](.github/workflows/ci.yml) 在 push、pull request 和手动触发时，对 Ubuntu/Windows/macOS × Node 22.23.5/24 运行隔离回归、语法检查、发布清单和安装自检，另检查 npm 打包内容。独立 macOS 作业为打包产物安装 Electron（Electron 44 起没有 postinstall，需显式运行 `node node_modules/electron/install.js` 下载二进制），在临时资料目录和本地测试页上验证地址栏导航、标签切换、后台截图与点击、POST 新标签、快照脱敏、共享/隔离登录状态、弹框和下载。设置 `DSH_TEST_FOREGROUND=1` 运行打包测试时，还会短暂显示测试窗口，检查快捷键和实际键盘焦点。不启动 DSH，也不验证 DSH 反问卡片。CI 不自动生成清单；修改发布文件后要主动运行 `npm run prepare:release`。
 
 这些开发测试、启动器和工作流不进入插件发布文件列表；`npm test` 和 `npm run check:syntax` 仅在源码 checkout 中可用，市场安装用户无需运行。尚需另行进行真实 DSH 双对话、Electron 导航/输入、Windows 任务栏/多屏及 Linux 实机验收。模拟环境中的跨平台绿灯不等同实机兼容性认证。
 
@@ -369,7 +374,7 @@ host/main.cjs             对话窗口映射、共享 Session、独立 CDP 与�
 
 ## 已知限制
 
-- 每个对话只有一个窗口。弹出的 HTTP(S) 链接和以新窗口为目标的表单在所属窗口加载，POST 保留正文和来源策略。Electron 44 对完全无字段的 `text/plain` 表单和默认编码提供相同的元数据，两者都会以空 POST 和 `application/x-www-form-urlencoded` 发送。
+- 每个对话只有一个窗口。弹出的 HTTP(S) 链接和以新窗口为目标的表单在同窗新标签中打开，Chromium 处理 POST 正文和来源策略，来源页保留原有内容。
 - 快照不包含 iframe 和 shadow root；光标只注入顶层文档。
 - 截图只截当前视口，不是整页滚动截图；`fullPage` 是预留参数，暂不生效。
 - 输入通过 `Input.insertText` 完成；human 默认逐码点约 18 ms 间隔，fast 为显式选择的受控分块。快速模式的站点兼容性需按页面实际事件行为验证。

@@ -12,7 +12,7 @@
  * 才在网页自己的 JavaScript 上下文执行，二者通过 CDP 传递可序列化的数据。
  */
 
-const { app, BrowserWindow, Menu, screen, session, ipcMain } = require('electron')
+const { app, BrowserWindow, WebContentsView, Menu, screen, session, ipcMain } = require('electron')
 const { createServer } = require('node:net')
 const { randomBytes, createHmac, timingSafeEqual } = require('node:crypto')
 const { mkdirSync, mkdtempSync, statSync, rmSync } = require('node:fs')
@@ -31,14 +31,14 @@ function configureComponents(enabled) {
   }
   const removed = [...enabledComponents].filter(name => !enabled.includes(name))
   enabledComponents = new Set(enabled)
-  for (const record of windows.values()) {
-    for (const job of record.jobs) if (removed.includes(job.message.component)) {
-      cancelRequest(job, new Error(`browser component disabled: ${job.message.component}`))
+  for (const conversation of windows.values()) {
+    for (const record of [conversation, ...conversation.tabs.values()]) {
+      for (const job of record.jobs) {
+        if (removed.includes(job.message.component)) cancelRequest(job, new Error(`browser component disabled: ${job.message.component}`))
+        else if (removed.includes('requests') && job.message.op === 'upload') cancelRequest(job, new Error('webpage request-handling component disabled during upload'))
+      }
     }
-    if (removed.includes('requests')) for (const job of record.jobs) if (job.message.op === 'upload') {
-      cancelRequest(job, new Error('webpage request-handling component disabled during upload'))
-    }
-    record.updateComponents()
+    for (const tab of conversation.tabs.values()) tab.updateComponents()
   }
   if (!componentEnabled('files')) for (const download of activeDownloads.values()) {
     download.entry.error = 'download cancelled because file component was disabled'
@@ -62,7 +62,7 @@ if (TOKEN.length === 0) throw new Error('BROWSER_USE_TOKEN is required')
 const SESSION_MODE = process.env.BROWSER_USE_SESSION_MODE ?? 'shared'
 if (!['shared', 'isolated'].includes(SESSION_MODE)) throw new Error('BROWSER_USE_SESSION_MODE must be shared or isolated')
 const WIDTH = Number(process.env.BROWSER_USE_WIDTH || 1400) || 1400
-const HEIGHT = Number(process.env.BROWSER_USE_HEIGHT || 900) || 900
+const HEIGHT = Math.max(160, Number(process.env.BROWSER_USE_HEIGHT) || 900)
 const FORCE_DOCK = process.env.BROWSER_USE_KEEP_DOCK === '1'
 const HIDE_DOCK = process.env.BROWSER_USE_HIDE_DOCK === '1' && FORCE_DOCK !== true
 const WINDOWS_TASKBAR = process.platform === 'win32'
@@ -84,6 +84,7 @@ let nextWindowNumber = 0
 let nextElementRef = 0 // host 内单调递增，快照更新及窗口重建都不复用旧编号。
 let lastUse = 0
 const windows = new Map()
+const toolbars = new Map()
 // 一个连接内的请求表：取消通过 requestId 定位，同时校验 conversationId，不能跨对话。
 const requests = new Map()
 const REQUEST_TIMEOUT_MS = 60_000
@@ -232,7 +233,7 @@ function createRequestJob(message, record) {
 const operations = new Set([
   'navigate', 'snapshot', 'click', 'hover', 'type', 'insertText', 'scroll', 'key', 'screenshot', 'eval',
   'wait', 'state', 'read', 'downloads', 'requests', 'respond', 'upload', 'pdf',
-  'windowShow', 'windowHide', 'windowState', 'back', 'reload', 'close', 'reset',
+  'tabs', 'windowShow', 'windowHide', 'windowState', 'back', 'reload', 'close', 'reset',
 ])
 
 function updateDockMenu() {
@@ -273,35 +274,24 @@ function send(message) {
 }
 
 // 闭包把所有 await 前后的页面操作固定在同一个窗口；没有全局“当前窗口”。
-function createConversation(conversationId) {
-  const windowNumber = ++nextWindowNumber
-  const title = `dsh-browser-use-automation #${windowNumber}`
-  let win = null
-  let retireSession
+function createTab(conversationId, view, adopted, remove) {
+  const contents = view.webContents
   let refs = new Map()
   let documentVersion = 0
   let nativeUI = null
   const elementRegistryKey = '__dsh_refs_' + randomBytes(16).toString('hex')
-  // 每代窗口独立签发游标，跨对话、close/reset 和 host 重启都不能误用旧读取位置。
+  // 每个标签独立签发游标，跨对话、close/reset 和 host 重启都不能误用旧读取位置。
   const readCursorKey = randomBytes(32)
   function invalidateRefs() { refs.clear(); documentVersion += 1; nativeUI?.invalidate() }
-  let revealReady = false
   let disposed = false
-  // 原生关闭意图只属于这一代记录；RPC close/reset、初始化失败和宿主退出
-  // 均不设置它，避免程序销毁最后一个窗口时误把可复用的宿主也退出。
-  let nativeCloseRequested = false
-  let failure = null
-  let watch = null
-  let activeJob = null
-  // Windows 为原生缩略图保留不透明绘制表面，不能再以 opacity 判断是否在人工查看。
-  // transitioning 防止内部恢复/隐藏触发的 focus 被当作用户点击任务栏预览。
-  let backgrounded = true
-  let transitioning = false
+  let failure
+  let activeJob
   const timers = new Set()
   const pending = new Set()
   const record = {
-    windowNumber, conversationId, lastUsed: ++lastUse, queue: Promise.resolve(),
-    ready: null, dispatch, assertLive, dispose, isReady, revealWindow, hideToBackground,
+    id: randomBytes(16).toString('hex'), conversationId, view, contents, queue: Promise.resolve(),
+    dispose, assertLive, manualNavigation, ready: null,
+    status: () => nativeUI.status(),
     jobs: new Set(),
     async execute(job) {
       activeJob = job
@@ -317,53 +307,23 @@ function createConversation(conversationId) {
         if (job.error) throw job.error
       }
       guard()
-      if (message.op === 'requests') return nativeUI.status()
       if (message.op === 'respond') return nativeUI.resolve(message.requestId, message.accept, message.value)
       if (message.op === 'upload') return nativeUI.upload(message.requestId, message.paths, guard)
       throw new Error('unsupported native request')
     },
     assertPageAvailable() { nativeUI?.assertUnblocked() },
     updateComponents() { nativeUI?.setEnabled({ files: componentEnabled('files'), requests: componentEnabled('requests') }) },
-    onDisplaysChanged() {
-      if (WINDOWS_TASKBAR && isReady() && backgrounded) {
-        win.setOpacity(park() ? 1 : 0)
-      }
-    },
-    onResign() {
-      schedule(() => {
-        if (isReady() && win.isVisible() && (WINDOWS_TASKBAR ? !backgrounded : win.getOpacity() > 0) && !appActive()) hideToBackground()
-      }, 80)
-    },
   }
-
-  if (!downloadRecords.has(conversationId)) downloadRecords.set(conversationId, [])
 
   function assertLive() {
     if (disposed) throw failure
-    if (win !== null && win.isDestroyed()) {
-      dispose()
-      throw failure
-    }
+    if (contents.isDestroyed()) throw new Error('browser tab closed')
   }
 
   function assertOperation() {
     assertLive()
     if (activeJob?.error) throw activeJob.error
   }
-
-  function isReady() {
-    return !disposed && revealReady && win !== null && !win.isDestroyed()
-  }
-
-  function schedule(callback, ms) {
-    if (disposed) return
-    const timer = setTimeout(() => {
-      timers.delete(timer)
-      if (!disposed) callback()
-    }, ms)
-    timers.add(timer)
-  }
-
   async function whileLive(operation) {
     assertLive()
     let rejectClosed
@@ -400,32 +360,27 @@ function createConversation(conversationId) {
     }))
   }
 
-  function dispose(error = new Error('conversation window closed')) {
+  function dispose(error = new Error('browser tab closed')) {
     if (disposed) return
     disposed = true
     failure = error
     nativeUI?.invalidate()
-    if (win !== null) downloadOwners.delete(win.webContents)
-    if (win !== null) nativeControllers.delete(win.webContents)
+    downloadOwners.delete(contents)
+    nativeControllers.delete(contents)
     for (const download of activeDownloads.values()) {
       if (download.owner === record) {
-        download.entry.error = 'download cancelled because its conversation window closed or reset'
+        download.entry.error = 'download cancelled because its browser tab closed'
         download.item.cancel()
       }
     }
     for (const job of record.jobs) cancelRequest(job, error)
-    revealReady = false
     for (const timer of timers) clearTimeout(timer)
     timers.clear()
-    if (watch !== null) clearInterval(watch)
     refs.clear()
     for (const reject of pending) reject(error)
     pending.clear()
-    // 旧窗口的延迟事件不得删除同一对话后来创建的新记录。
-    if (windows.get(conversationId) === record) windows.delete(conversationId)
-    if (win !== null && !win.isDestroyed()) win.destroy()
-    retireSession?.()
-    updateDockMenu()
+    remove(record, error)
+    if (!contents.isDestroyed()) contents.close({ waitForBeforeUnload: false })
   }
 
   // CDP（Chrome DevTools Protocol）经 Electron 的 debugger 接口控制当前页面，
@@ -434,7 +389,7 @@ function createConversation(conversationId) {
     assertOperation()
     const response = await whileLive(() => {
       assertOperation()
-      return win.webContents.debugger.sendCommand(method, params)
+      return contents.debugger.sendCommand(method, params)
     })
     if (!navigationCommand) assertOperation()
     return response
@@ -520,7 +475,7 @@ function createConversation(conversationId) {
     }
   })()`
 
-  // 数字 ref 只属于这个窗口的最近快照；任何新快照、主框架导航都会使旧 ref 失效。
+  // 数字 ref 只属于这个标签的最近快照；任何新快照、主框架导航都会使旧 ref 失效。
   async function snapshot(options = {}) {
     const { selector, maxElements = 150, includeSelectors = true } = options
     if (selector !== undefined && (typeof selector !== 'string' || selector.trim() === '')) {
@@ -542,18 +497,18 @@ function createConversation(conversationId) {
     assertOperation()
     if (version !== documentVersion) throw new Error('page changed during snapshot; take a new snapshot')
     for (const element of value.elements) refs.set(element.ref, true)
-    return value
+    return { ...value, tabId: record.id }
   }
 
   // 先监听主框架加载再发导航命令，不能把旧页面的 readyState=complete 当成新页面成功。
   // Promise 提前失败时先记录结果；仍等正在发送的 CDP 返回，避免旧命令与下一项交错。
-  async function navigateAndWait(command, timeoutMs) {
+  async function navigateAndWait(command, timeoutMs, takeSnapshot = true, reportTimeout) {
     assertOperation()
     invalidateRefs()
-    const contents = win.webContents
     const job = activeJob
     let started = false
     let settled = false
+    let timedOut = false
     let httpError = null
     let stopped = false
     const addresses = new Set()
@@ -575,8 +530,10 @@ function createConversation(conversationId) {
     }
     const listen = (name, handler) => { listeners.push([name, handler]); contents.on(name, handler) }
     const timer = setTimeout(() => {
+      timedOut = true
       const error = new Error(`navigation timed out after ${timeoutMs}ms; page may still be loading`)
       if (job) cancelRequest(job, error)
+      else reportTimeout(error)
       // 页面加载可能还在继续；超时先通知调用者，但队列等到加载真正结束或显式重置。
     }, timeoutMs)
     timers.add(timer)
@@ -618,15 +575,42 @@ function createConversation(conversationId) {
       await whileLive(() => navigation)
       assertOperation()
       if (httpError) throw httpError // 完成事件可能先于 CDP 的失败/下载响应到达。
-      return snapshot()
+      if (takeSnapshot) return snapshot()
     } catch (error) {
-      if (job?.error && !disposed && started && !settled) {
+      if ((timedOut || job?.error) && !disposed && started && !settled) {
         await whileLive(() => navigation).catch(() => {})
       }
       throw error
     } finally {
       cleanup()
     }
+  }
+
+  function manualNavigation(action, value) {
+    // Toolbar and RPC navigations on one tab share the same ordering barrier.
+    const response = Promise.withResolvers()
+    const next = record.queue.then(async () => {
+      await record.ready
+      assertLive()
+      nativeUI.assertUnblocked()
+      if (action === 'navigate') {
+        const url = addressURL(value)
+        return navigateAndWait(() => cdp('Page.navigate', { url }, true), 15_000, false, response.reject)
+      }
+      if (action === 'reload') return navigateAndWait(() => cdp('Page.reload', {}, true), 10_000, false, response.reject)
+      if (action !== 'back' && action !== 'forward') throw new Error('unknown toolbar action')
+      return traverseHistory(action, false, response.reject)
+    })
+    record.queue = next.catch(() => {})
+    next.then(response.resolve, response.reject)
+    return response.promise
+  }
+
+  async function traverseHistory(direction, takeSnapshot, reportTimeout) {
+    const history = await cdp('Page.getNavigationHistory')
+    const entry = history.entries[history.currentIndex + (direction === 'back' ? -1 : 1)]
+    if (!entry) throw new Error(`no ${direction === 'back' ? 'previous' : 'next'} page in this tab history`)
+    return navigateAndWait(() => cdp('Page.navigateToHistoryEntry', { entryId: entry.id }, true), 10_000, takeSnapshot, reportTimeout)
   }
 
   async function navigate(url) {
@@ -742,9 +726,9 @@ function createConversation(conversationId) {
     await whileLive(async () => {
       assertOperation()
       const pointer = { x: target.x, y: target.y, button: 'left', clickCount: 1 }
-      await win.webContents.debugger.sendCommand('Input.dispatchMouseEvent', { ...pointer, type: 'mousePressed' })
+      await contents.debugger.sendCommand('Input.dispatchMouseEvent', { ...pointer, type: 'mousePressed' })
       assertLive()
-      await win.webContents.debugger.sendCommand('Input.dispatchMouseEvent', { ...pointer, type: 'mouseReleased' })
+      await contents.debugger.sendCommand('Input.dispatchMouseEvent', { ...pointer, type: 'mouseReleased' })
     })
     assertOperation()
     await showRipple(target.x, target.y)
@@ -848,7 +832,7 @@ function createConversation(conversationId) {
         await whileLive(() => {
           assertOperation()
           release.unshift({ params: keyUp, modifierBit: modifier.bit })
-          const command = win.webContents.debugger.sendCommand('Input.dispatchKeyEvent', params)
+          const command = contents.debugger.sendCommand('Input.dispatchKeyEvent', params)
           return command
         })
         assertOperation()
@@ -863,7 +847,7 @@ function createConversation(conversationId) {
         assertOperation()
         release.unshift({ params: { ...params, type: 'keyUp', modifiers: modifierMask }, modifierBit: 0 })
         const producesText = key.text && (modifierMask === 0 || modifierMask === MODIFIER_DEFINITIONS.Shift.bit)
-        return win.webContents.debugger.sendCommand('Input.dispatchKeyEvent',
+        return contents.debugger.sendCommand('Input.dispatchKeyEvent',
           producesText ? { ...params, text: key.text } : params)
       })
       assertOperation()
@@ -875,7 +859,7 @@ function createConversation(conversationId) {
     for (const item of release) {
       if (item.modifierBit) releaseMask &= ~item.modifierBit
       try {
-        await whileLive(() => win.webContents.debugger.sendCommand('Input.dispatchKeyEvent', {
+        await whileLive(() => contents.debugger.sendCommand('Input.dispatchKeyEvent', {
           ...item.params, modifiers: releaseMask,
         }))
       } catch (error) {
@@ -907,7 +891,7 @@ function createConversation(conversationId) {
         await whileLive(async () => {
           assertOperation()
           progress.inFlight = true
-          await win.webContents.debugger.sendCommand('Input.insertText', { text: chunk.join('') })
+          await contents.debugger.sendCommand('Input.insertText', { text: chunk.join('') })
           progress.typed += chunk.length
           progress.inFlight = false
         })
@@ -928,7 +912,6 @@ function createConversation(conversationId) {
   }
 
   async function insertText(text) {
-    const contents = win.webContents
     const frame = contents.focusedFrame
     const version = documentVersion
     const editable = frame && await whileLive(() => frame.executeJavaScript(`(() => {
@@ -1095,11 +1078,6 @@ function createConversation(conversationId) {
 
   async function dispatch(message) {
     assertLive()
-    // 用户离开人工查看窗口后，先恢复后台契约，再处理请求。普通页面操作
-    // 不主动展示窗口；下面的 windowShow 是明确请求展示的例外。
-    if (win !== null && !win.isDestroyed() && win.isVisible() && (WINDOWS_TASKBAR ? !backgrounded : win.getOpacity() > 0) && !appActive()) {
-      hideToBackground()
-    }
     switch (message.op) {
       case 'navigate':
         return navigate(message.url)
@@ -1146,36 +1124,143 @@ function createConversation(conversationId) {
         return readText(message)
       case 'pdf':
         return nativeUI.pdf()
-      case 'windowShow':
-        return revealWindow()
-      case 'windowHide':
-        return hideToBackground()
-      case 'windowState':
-        return {
-          windowId: win.id,
-          windowNumber,
-          conversationId,
-          bounds: win.getBounds(),
-          visible: win.isVisible(),
-          focused: win.isFocused(),
-          minimized: win.isMinimized(),
-          opacity: win.getOpacity(),
-          title: win.getTitle(),
-        }
-      case 'back': {
-        const history = await cdp('Page.getNavigationHistory')
-        if (history.currentIndex <= 0) throw new Error('no previous page in this window history')
-        return navigateAndWait(() => cdp('Page.navigateToHistoryEntry', { entryId: history.entries[history.currentIndex - 1].id }, true), 10_000)
-      }
+      case 'back':
+        return traverseHistory('back', true)
       case 'reload':
         return navigateAndWait(() => cdp('Page.reload', { ignoreCache: false }, true), 10_000)
-      case 'close':
-        // 只销毁本对话窗口；已排进旧队列的请求不能转交给以后创建的新窗口。
-        dispose()
-        return { closed: true }
       default:
         throw new Error(`unknown op: ${message.op}`)
     }
+  }
+
+  downloadOwners.set(contents, record)
+  nativeUI = createNativeUI({
+    contents,
+    version: () => documentVersion,
+    interrupt: message => {
+      if (activeJob) cancelRequest(activeJob, new Error(message))
+      for (const job of record.jobs) if (job.message.op === 'upload') cancelRequest(job, new Error(message))
+    },
+    assertLive,
+    assertOperation,
+    whileLive,
+    command: (method, params, guard) => whileLive(() => {
+      guard?.()
+      return contents.debugger.sendCommand(method, params)
+    }),
+    directory: downloadDirectory,
+    remainingDiskBudget: downloadSpace,
+    enabled: { files: componentEnabled('files'), requests: componentEnabled('requests') },
+  })
+  nativeControllers.set(contents, nativeUI)
+  contents.on('did-start-navigation', (details, _url, _inPlace, legacyMain) => {
+    if ((details.isMainFrame ?? legacyMain) === true) invalidateRefs()
+    else nativeUI.invalidate()
+  })
+  contents.on('did-navigate-in-page', (_event, _url, isMainFrame) => {
+    if (isMainFrame) invalidateRefs()
+    else nativeUI.invalidate()
+  })
+
+  contents.on('destroyed', () => dispose())
+  contents.on('render-process-gone', (_event, details) => dispose(new Error(`renderer gone: ${details.reason}`)))
+  contents.on('preload-error', (_event, path, error) => dispose(new Error(`background UI preload failed (${path}): ${error.message}`)))
+  record.ready = (async () => {
+    if (!adopted) await whileLive(() => contents.loadURL('about:blank'))
+    assertLive()
+    contents.debugger.attach('1.3')
+    await cdp('Page.enable')
+    contents.debugger.on('message', (_event, method, params) => {
+      if (method !== 'Page.fileChooserOpened' || disposed) return
+      nativeUI.fileChooser(params).catch(error => {
+        console.error(`[dsh-browser-use-automation] file chooser interception failed: ${error.message}`)
+      })
+    })
+    await cdp('Page.setInterceptFileChooserDialog', { enabled: true })
+    assertLive()
+  })().catch(error => { dispose(error); throw error })
+  record.ready.catch(() => {})
+  return record
+}
+
+function createConversation(conversationId) {
+  const windowNumber = ++nextWindowNumber
+  const title = `dsh-browser-use-automation #${windowNumber}`
+  let win = null
+  let toolbarContents
+  let retireSession
+  let revealReady = false
+  let disposed = false
+  // 原生关闭意图只属于这一代记录；RPC close/reset、初始化失败和宿主退出
+  // 均不设置它，避免程序销毁最后一个窗口时误把可复用的宿主也退出。
+  let nativeCloseRequested = false
+  let failure = null
+  let watch = null
+  // Windows 为原生缩略图保留不透明绘制表面，不能再以 opacity 判断是否在人工查看。
+  // transitioning 防止内部恢复/隐藏触发的 focus 被当作用户点击任务栏预览。
+  let backgrounded = true
+  let transitioning = false
+  const timers = new Set()
+  const tabs = new Map()
+  let active
+  let browserSession
+  const record = {
+    windowNumber, conversationId, lastUsed: ++lastUse, tabs, jobs: new Set(),
+    ready: null, assertLive, dispose, isReady, revealWindow, hideToBackground,
+    target, tabAction, windowAction,
+    beforePageAction() {
+      if (isReady() && !backgrounded && !appActive()) hideToBackground()
+    },
+    onDisplaysChanged() {
+      if (WINDOWS_TASKBAR && isReady() && backgrounded) {
+        win.setOpacity(park() ? 1 : 0)
+      }
+    },
+    onResign() {
+      schedule(() => {
+        if (isReady() && win.isVisible() && (WINDOWS_TASKBAR ? !backgrounded : win.getOpacity() > 0) && !appActive()) hideToBackground()
+      }, 80)
+    },
+  }
+
+  if (!downloadRecords.has(conversationId)) downloadRecords.set(conversationId, [])
+
+  function assertLive() {
+    if (disposed) throw failure
+    if (win !== null && win.isDestroyed()) {
+      dispose()
+      throw failure
+    }
+  }
+
+  function isReady() {
+    return !disposed && revealReady && win !== null && !win.isDestroyed()
+  }
+
+  function schedule(callback, ms) {
+    if (disposed) return
+    const timer = setTimeout(() => {
+      timers.delete(timer)
+      if (!disposed) callback()
+    }, ms)
+    timers.add(timer)
+  }
+
+  function dispose(error = new Error('conversation window closed')) {
+    if (disposed) return
+    disposed = true
+    failure = error
+    revealReady = false
+    for (const timer of timers) clearTimeout(timer)
+    if (watch !== null) clearInterval(watch)
+    for (const job of record.jobs) cancelRequest(job, error)
+    toolbars.delete(toolbarContents)
+    for (const tab of tabs.values()) tab.dispose(error)
+    // 旧窗口的延迟事件不得删除同一对话后来创建的新记录。
+    if (windows.get(conversationId) === record) windows.delete(conversationId)
+    if (win !== null && !win.isDestroyed()) win.destroy()
+    retireSession?.()
+    updateDockMenu()
   }
 
   // 不调用 hide()，保留绘制表面。Windows 的背景窗口不透明，必须放到所有
@@ -1283,9 +1368,144 @@ function createConversation(conversationId) {
     }
   }
 
+  function target(id) {
+    const tab = id === undefined ? active : tabs.get(id)
+    if (!tab) throw new Error('unknown or closed browser tab')
+    return tab
+  }
+
+  function state() {
+    return { activeTabId: active?.id ?? '', tabs: Array.from(tabs.values(), ({ id, contents }) => ({
+      id, title: contents.getTitle(), url: contents.getURL() || 'about:blank',
+      canGoBack: contents.navigationHistory.canGoBack(), canGoForward: contents.navigationHistory.canGoForward(),
+    })) }
+  }
+
+  function notify() {
+    if (!disposed && !toolbarContents.isDestroyed()) toolbarContents.send('dsh:tabs', state())
+  }
+
+  function layout(tab) {
+    const [width, height] = win.getContentSize()
+    tab.view.setBounds({ x: 0, y: 84, width, height: Math.max(0, height - 84) })
+  }
+
+  function select(tab, focusPage = false) {
+    const focus = !backgrounded && win.isFocused()
+      && (focusPage || (active !== tab && active && !active.contents.isDestroyed() && active.contents.isFocused()))
+    active = tab
+    win.contentView.addChildView(tab.view)
+    layout(tab)
+    if (focus) tab.contents.focus()
+    notify()
+  }
+
+  function remove(tab, error) {
+    if (!tabs.delete(tab.id)) return
+    if (win.isDestroyed()) { dispose(error); return }
+    win.contentView.removeChildView(tab.view)
+    if (disposed) return
+    if (active === tab) {
+      active = undefined
+      if (tabs.size) select(Array.from(tabs.values()).at(-1), !win.webContents.isFocused())
+      else dispose(error)
+    } else notify()
+  }
+
+  function focusAddress() {
+    if (backgrounded || !win.isFocused()) return
+    win.webContents.focus()
+    win.webContents.send('dsh:address')
+  }
+
+  function shortcut(event, input) {
+    if (backgrounded || !win.isFocused() || input.type !== 'keyDown' || input.isAutoRepeat
+      || input.alt || input.shift || !(process.platform === 'darwin' ? input.meta : input.control)) return
+    switch (input.key.toLowerCase()) {
+      case 'l': event.preventDefault(); focusAddress(); break
+      case 't': event.preventDefault(); openTab(); focusAddress(); break
+      case 'w': event.preventDefault(); closeTab(active); break
+    }
+  }
+
+  function pagePreferences() {
+    return { session: browserSession, sandbox: true, nodeIntegration: false, contextIsolation: true,
+      nodeIntegrationInSubFrames: true, backgroundThrottling: false, disableDialogs: true }
+  }
+
+  function openTab(options, activate = true) {
+    assertLive()
+    const view = new WebContentsView({ ...options, webPreferences: pagePreferences() })
+    const tab = createTab(conversationId, view, Boolean(options), remove)
+    tabs.set(tab.id, tab)
+    const contents = tab.contents
+    contents.setWindowOpenHandler(({ url, disposition }) => {
+      if (url !== 'about:blank' && !/^https?:/i.test(url)) return { action: 'deny' }
+      return { action: 'allow', outlivesOpener: true, overrideBrowserWindowOptions: { webPreferences: pagePreferences() },
+        createWindow(childOptions) {
+          return openTab(childOptions, active === tab && disposition !== 'background-tab').contents
+        } }
+    })
+    for (const event of ['did-navigate', 'did-navigate-in-page', 'page-title-updated', 'did-stop-loading']) contents.on(event, notify)
+    contents.on('before-input-event', (event, input) => { if (active === tab) shortcut(event, input) })
+    if (activate || !active) select(tab)
+    else {
+      win.contentView.addChildView(view)
+      layout(tab)
+      select(active)
+    }
+    return tab
+  }
+
+  function closeTab(tab) {
+    const replacement = tabs.size === 1 ? openTab() : undefined
+    tab.dispose()
+    return replacement
+  }
+
+  async function tabAction(action, id, { first = false, manual = false } = {}) {
+    let created
+    switch (action) {
+      case 'list': break
+      case 'new': created = first ? target() : openTab(); break
+      case 'select': select(target(id), manual); break
+      case 'close': created = closeTab(target(id)); break
+      default: throw new Error('unknown browser tab action')
+    }
+    const result = state()
+    if (manual && action === 'new') focusAddress()
+    if (created) await created.ready
+    return result
+  }
+
+  function toolbarAction(action, id, value) {
+    if (['list', 'new', 'select', 'close'].includes(action)) return tabAction(action, id, { manual: true })
+    return target(id).manualNavigation(action, value)
+  }
+
+  function windowAction(op) {
+    switch (op) {
+      case 'windowShow':
+        return revealWindow()
+      case 'windowHide':
+        return hideToBackground()
+      case 'windowState':
+        return {
+          windowId: win.id,
+          windowNumber,
+          conversationId,
+          bounds: win.getBounds(),
+          visible: win.isVisible(),
+          focused: win.isFocused(),
+          minimized: win.isMinimized(),
+          opacity: win.getOpacity(),
+          title: win.getTitle(),
+        }
+    }
+  }
+
   async function initialize() {
     assertLive()
-    let browserSession
     if (SESSION_MODE === 'shared') {
       browserSession = session.defaultSession
       sessionUsed = true
@@ -1304,86 +1524,23 @@ function createConversation(conversationId) {
         }).catch(error => console.error(`[dsh-browser-use-automation] isolated session cleanup failed: ${error.message}`))
       }
     }
-    // 页面渲染进程与主进程隔离，不启用网页的 Node.js 集成；后台不节流，
-    // 让页面任务在不激活窗口时继续运行。show: false 仅控制初始创建状态。
     win = new BrowserWindow({
       width: WIDTH,
-      height: HEIGHT,
+      height: HEIGHT, minHeight: 160,
       show: false,
       focusable: WINDOWS_TASKBAR,
       title,
       skipTaskbar: !WINDOWS_TASKBAR,
-      webPreferences: {
-        session: browserSession,
-        sandbox: true,
-        nodeIntegration: false,
-        // Electron 仅在此开关启用时才对子框架运行 preload；仍强制沙箱和隔离，网页不获得 Node。
-        nodeIntegrationInSubFrames: true,
-        contextIsolation: true,
-        backgroundThrottling: false,
-        // 原生 JS 对话框兜底禁止；preload 把同步 alert/confirm/prompt 转为主对话反问。
-        disableDialogs: true,
-      },
+      webPreferences: { partition: 'dsh-browser-toolbar', preload: join(__dirname, 'toolbar-preload.cjs'),
+        sandbox: true, nodeIntegration: false, contextIsolation: true, zoomFactor: 1 },
     })
-    downloadOwners.set(win.webContents, record)
-    nativeUI = createNativeUI({
-      contents: win.webContents,
-      version: () => documentVersion,
-      interrupt: message => {
-        if (activeJob) cancelRequest(activeJob, new Error(message))
-        for (const job of record.jobs) if (job.message.op === 'upload') cancelRequest(job, new Error(message))
-      },
-      assertLive,
-      assertOperation,
-      whileLive,
-      command: (method, params, guard) => whileLive(() => {
-        guard?.()
-        return win.webContents.debugger.sendCommand(method, params)
-      }),
-      directory: downloadDirectory,
-      remainingDiskBudget: downloadSpace,
-      enabled: { files: componentEnabled('files'), requests: componentEnabled('requests') },
-    })
-    nativeControllers.set(win.webContents, nativeUI)
-    // 首次 loadURL 也可能触发原生焦点请求，不能等 about:blank/CDP 就绪后才禁止聚焦和鼠标命中。
+    toolbarContents = win.webContents
+    toolbarContents.setWindowOpenHandler(() => ({ action: 'deny' }))
+    win.webContents.on('will-navigate', event => event.preventDefault())
+    toolbars.set(win.webContents, toolbarAction)
+    win.webContents.on('before-input-event', shortcut)
+    win.on('resize', () => { for (const tab of tabs.values()) layout(tab) })
     setBackgroundProperties()
-    // 页面不能再开第二个原生窗口。target=_blank 等 HTTP(S) 链接改在当前
-    // 窗口加载，其他新窗口请求拒绝；不影响其他对话已拥有的窗口。
-    win.webContents.setWindowOpenHandler(({ url, referrer, postBody }) => {
-      if (!disposed && /^https?:/i.test(url)) {
-        const options = { httpReferrer: referrer }
-        if (postBody) {
-          options.postData = postBody.data
-          let contentType = postBody.contentType
-          if (postBody.boundary) contentType += '; boundary=' + postBody.boundary
-          // Electron 44 把非 multipart 的表单统一标为 urlencoded。该编码会转义换行，
-          // 而 HTML 的非空 text/plain 表单一定以原始 CRLF 结束。
-          const last = postBody.data.at(-1)
-          if (contentType === 'application/x-www-form-urlencoded' && last?.type === 'rawData'
-            && last.bytes.subarray(-2).toString() === '\r\n') contentType = 'text/plain'
-          options.extraHeaders = 'Content-Type: ' + contentType
-        }
-        const job = activeJob
-        win.loadURL(url, options).catch(error => {
-          if (disposed) return
-          if (job && !job.done) cancelRequest(job, error)
-          else console.error(`[dsh-browser-use-automation] popup navigation failed: ${error.message}`)
-        })
-      }
-      return { action: 'deny' }
-    })
-    // 点击链接、脚本跳转、前进后退和 SPA 路由都必须作废旧 ref；仅主框架影响本窗口。
-    win.webContents.on('did-start-navigation', (details, _url, _inPlace, legacyMain) => {
-      if ((details.isMainFrame ?? legacyMain) === true) invalidateRefs()
-      else nativeUI.invalidate()
-    })
-    win.webContents.on('did-navigate-in-page', (_event, _url, isMainFrame) => {
-      if (isMainFrame) invalidateRefs()
-      else nativeUI.invalidate()
-    })
-    win.webContents.on('did-create-window', child => {
-      try { child.destroy() } catch {}
-    })
     // 网页标题不能覆盖人工识别用的窗口编号；网页自己的 title 仍由 state 返回。
     win.on('page-title-updated', event => { event.preventDefault() })
     win.on('focus', () => {
@@ -1457,18 +1614,8 @@ function createConversation(conversationId) {
         hideToBackground()
       }, 120)
     })
-    // 先建立初始文档，再附加唯一的 CDP 会话；后续导航复用同一个 debugger。
-    await whileLive(() => win.loadURL('about:blank'))
-    assertLive()
-    win.webContents.debugger.attach('1.3')
-    await cdp('Page.enable')
-    win.webContents.debugger.on('message', (_event, method, params) => {
-      if (method !== 'Page.fileChooserOpened' || disposed) return
-      nativeUI.fileChooser(params).catch(error => {
-        console.error(`[dsh-browser-use-automation] file chooser interception failed: ${error.message}`)
-      })
-    })
-    await cdp('Page.setInterceptFileChooserDialog', { enabled: true })
+    openTab()
+    await win.loadFile(join(__dirname, 'toolbar.html'))
     assertLive()
     setBackgroundProperties()
     try {
@@ -1490,10 +1637,10 @@ function createConversation(conversationId) {
     updateDockMenu()
   }
 
-  // 先登记再异步初始化；同一轮到达的首批请求共享一个 ready 和一个队列。
+  // 同步登记初始标签，使首批请求在等待工具栏就绪前就能绑定目标。
   windows.set(conversationId, record)
   updateDockMenu()
-  record.ready = Promise.resolve().then(initialize).catch(error => {
+  record.ready = initialize().catch(error => {
     dispose(error)
     throw error
   })
@@ -1501,6 +1648,15 @@ function createConversation(conversationId) {
   // 原 Promise 保留失败状态，尚在等待它的有效请求仍会得到同一错误。
   record.ready.catch(() => {})
   return record
+}
+
+function addressURL(value) {
+  const address = typeof value === 'string' ? value.trim() : ''
+  if (!address || /[\s\u0000-\u001f]/u.test(address)) throw new Error('请输入有效的 HTTP 或 HTTPS 网址')
+  const hasScheme = /^[a-z][a-z0-9+.-]*:/i.test(address) && !/^[\w.-]+:\d+(?:[/?#]|$)/.test(address)
+  const url = new URL(hasScheme ? address : 'https://' + address)
+  if (!['http:', 'https:'].includes(url.protocol)) throw new Error('地址栏支持 HTTP 和 HTTPS 网址')
+  return url.href
 }
 
 // 单行 JSON 是一个 RPC 请求：先 hello 认证，再把 op 交给 dispatch。
@@ -1559,49 +1715,76 @@ function onLine(line) {
     send({ id: message.id, ok: true, result: { downloads: downloadRecords.get(message.conversationId) || [] } })
     return
   }
-  if (['requests', 'respond', 'upload'].includes(message.op)) {
-    if (!record) {
-      if (message.op === 'requests') send({ id: message.id, ok: true, result: { requests: [], audit: [] } })
-      else fail(new Error('no live conversation window for this browser request'))
-      return
-    }
-    // 同步网页对话框会挂起页面 JS；审核与回答必须绕过页面队列，否则无法解除阻塞。
-    const job = createRequestJob(message, record)
-    Promise.resolve().then(() => record.ready).then(async () => {
-      if (job.done) return
-      try {
-        const result = await record.nativeRequest(message, job)
-        record.assertLive()
-        if (job.error) throw job.error
-        finishRequest(job, null, result)
-      } catch (error) { finishRequest(job, error) }
-    }, error => finishRequest(job, error))
-    return
-  }
   if (message.op === 'close' || message.op === 'reset') {
-    // 控制面不进页面队列，否则永远等不到卡住的 eval/wait 结束。
-    // 仅用户显式调用才丢弃窗口现场；Cookie 等共享存储不清理。
     record?.dispose(new Error(`conversation window ${message.op === 'reset' ? 'reset' : 'closed'}`))
     send({ id: message.id, ok: true, result: message.op === 'reset' ? { reset: true } : { closed: true } })
     return
   }
-  if (record === undefined) record = createConversation(message.conversationId)
-  try { record.assertPageAvailable() } catch (error) { fail(error); return }
-  const job = createRequestJob(message, record)
-  record.queue = record.queue.then(async () => {
-    if (job.done) return
-    try {
-      await record.ready
-      if (job.done) return
-      record.assertLive()
-      record.lastUsed = ++lastUse
-      const result = await record.execute(job)
-      record.assertLive()
-      finishRequest(job, null, result)
-    } catch (error) {
-      finishRequest(job, error)
+  const reply = result => send({ id: message.id, ok: true, result })
+  try {
+    if (message.op === 'tabs') {
+      if (!['list', 'new', 'select', 'close'].includes(message.action)) throw new Error('unknown browser tab action')
+      if (['select', 'close'].includes(message.action) && typeof message.tabId !== 'string') throw new Error('tabId is required')
+      const first = !record
+      if (!record) {
+        if (message.action === 'list') { reply({ activeTabId: '', tabs: [] }); return }
+        if (message.action !== 'new') throw new Error('unknown or closed browser tab')
+        record = createConversation(message.conversationId)
+      }
+      const job = createRequestJob(message, record)
+      Promise.all([record.ready, record.tabAction(message.action, message.tabId, { first })])
+        .then(([, result]) => finishRequest(job, null, result), error => finishRequest(job, error))
+      return
     }
-  })
+    if (message.op === 'requests') {
+      if (message.tabId !== undefined && !record) throw new Error('unknown or closed browser tab')
+      const selected = message.tabId !== undefined ? [record.target(message.tabId)] : Array.from(record?.tabs.values() || [])
+      const result = { requests: [], audit: [] }
+      for (const tab of selected) {
+        const status = tab.status()
+        for (const key of ['requests', 'audit']) result[key].push(...status[key].map(item => ({ ...item, tabId: tab.id })))
+      }
+      reply(result)
+      return
+    }
+    if (message.op === 'respond' || message.op === 'upload') {
+      const tab = message.tabId !== undefined ? record?.target(message.tabId)
+        : Array.from(record?.tabs.values() || []).find(tab => tab.status().requests.some(item => item.id === message.requestId))
+      if (!tab) throw new Error('stale browser request or no live conversation window for this browser request')
+      const job = createRequestJob(message, tab)
+      Promise.resolve().then(() => tab.nativeRequest(message, job))
+        .then(result => finishRequest(job, null, result), error => finishRequest(job, error))
+      return
+    }
+    if (!record && message.tabId !== undefined) throw new Error('unknown or closed browser tab')
+    record ??= createConversation(message.conversationId)
+    if (['windowShow', 'windowHide', 'windowState'].includes(message.op)) {
+      const job = createRequestJob(message, record)
+      record.ready.then(() => {
+        if (job.done) return
+        record.assertLive()
+        finishRequest(job, null, record.windowAction(message.op))
+      }).catch(error => finishRequest(job, error))
+      return
+    }
+    // Capture the target before awaiting initialization or an earlier job.
+    const tab = record.target(message.tabId)
+    tab.assertPageAvailable()
+    const job = createRequestJob(message, tab)
+    tab.queue = tab.queue.then(async () => {
+      try {
+        await record.ready
+        await tab.ready
+        if (job.done) return
+        tab.assertLive()
+        record.lastUsed = ++lastUse
+        record.beforePageAction()
+        const result = await tab.execute(job)
+        tab.assertLive()
+        finishRequest(job, null, result)
+      } catch (error) { finishRequest(job, error) }
+    })
+  } catch (error) { fail(error) }
 }
 
 function onConnection(connection) {
@@ -1665,6 +1848,11 @@ async function start() {
     throw new Error('BROWSER_USE_DOWNLOAD_DIR must be an absolute directory path')
   }
   downloadDirectory = resolve(configured || join(process.env.DSH_HOME || join(app.getPath('home'), '.dsh'), 'browser-use', 'downloads'))
+  ipcMain.handle('dsh:toolbar', (event, action, id, value) => {
+    const handle = toolbars.get(event.sender)
+    if (!handle || event.senderFrame !== event.sender.mainFrame) throw new Error('unknown toolbar')
+    return handle(action, id, value)
+  })
   installNativeIPC(ipcMain, nativeControllers)
   if (SESSION_MODE === 'shared') {
     session.defaultSession.on('will-download', handleDownload)
